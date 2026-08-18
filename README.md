@@ -28,6 +28,18 @@ Editing the log while Filter is open debounces re-parse; stale Worker results ar
 2. Type a filter query in the filter panel
 3. Double-click a row to jump to the corresponding line in the source editor
 
+## Example
+
+Filter a large offline logcat dump with field keys, text OR, and a time lower bound:
+
+```
+tag:AlarmManager pid:2917 tencent | device after:10:50:00
+```
+
+![Log Filter example: source editor and filtered results side by side](docs/example.png)
+
+The query keeps `tag:` / `pid:` / `after:` as global AND conditions, uses `|` only for text OR (`tencent` or `device`), and shows matching lines with keyword highlights.
+
 ## Query Syntax
 
 | Syntax | Meaning |
