@@ -1,5 +1,7 @@
 # Log Filter
 
+English | [简体中文](README_CN.md)
+
 Android Studio Logcat-style log filtering for VS Code. Run **Log Filter: Open** (`Ctrl+Shift+L`) to filter with AS-compatible query syntax in a Beside Webview tab.
 
 ## Features
@@ -10,9 +12,9 @@ Android Studio Logcat-style log filtering for VS Code. Run **Log Filter: Open** 
 - **Virtual scrolling** for large result sets
 - **Double-click / Enter** to jump to source line
 - **Auto-reveal** filter tab when switching between open files
-- **Large files** (Phase 1b): ≥10 MB uses Worker thread + chunked parsing; ≥100 MB shows confirmation; progress bar in Filter tab
+- **Large files**: ≥10 MB uses Worker thread + chunked parsing; ≥100 MB shows confirmation; progress bar in Filter tab
 
-## Large files (Phase 1b)
+## Large files
 
 | File size | Behavior |
 |-----------|----------|
