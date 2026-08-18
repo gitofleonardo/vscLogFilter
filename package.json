@@ -1,19 +1,42 @@
 {
   "name": "vsc-log-filter",
-  "displayName": "Log Filter",
-  "description": "Android Logcat-style log filtering for VS Code",
+  "displayName": "vscLogFilter",
+  "description": "Filter offline Android logcat dumps in VS Code with Android Studio-compatible query syntax.",
   "version": "0.1.0",
   "license": "Apache-2.0",
+  "homepage": "https://github.com/gitofleonardo/vscLogFilter",
+  "bugs": {
+    "url": "https://github.com/gitofleonardo/vscLogFilter/issues"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/gitofleonardo/vscLogFilter.git"
   },
-  "publisher": "local",
+  "publisher": "gitofleonardo",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#1e3a5f",
+    "theme": "dark"
+  },
+  "preview": true,
+  "qna": "marketplace",
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
+    "Debuggers",
     "Other"
+  ],
+  "keywords": [
+    "logcat",
+    "android",
+    "log",
+    "filter",
+    "adb",
+    "offline",
+    "crash",
+    "stacktrace",
+    "log filter"
   ],
   "activationEvents": [
     "onStartupFinished",
