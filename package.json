@@ -1,0 +1,68 @@
+{
+  "name": "vsc-log-filter",
+  "displayName": "Log Filter",
+  "description": "Android Logcat-style log filtering for VS Code",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onWebviewPanel:logFilter.panel"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "logFilter.open",
+        "title": "Log Filter: Open",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "logFilter.close",
+        "title": "Log Filter: Close"
+      },
+      {
+        "command": "logFilter.clearQuery",
+        "title": "Log Filter: Clear Query"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "logFilter.open",
+          "when": "editorIsOpen",
+          "group": "navigation"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "logFilter.open",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l",
+        "when": "editorTextFocus"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.3.3",
+    "vitest": "^1.2.0"
+  }
+}

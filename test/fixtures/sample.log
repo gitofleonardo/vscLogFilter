@@ -1,0 +1,11 @@
+05-26 11:02:36.886 5689 5689 D AndroidRuntime: CheckJNI is OFF
+05-26 11:02:37.001 5689 5689 I ActivityManager: Start proc com.example.app
+05-26 11:02:38.100 5689 5700 W dalvikvm: GC_CONCURRENT freed 2048K
+05-26 11:02:40.200 5689 5689 E AndroidRuntime: FATAL EXCEPTION: main
+05-26 11:02:40.201 5689 5689 E AndroidRuntime: Process: com.example.app, PID: 5689
+05-26 11:02:40.202 5689 5689 E AndroidRuntime: java.lang.RuntimeException: Test crash
+05-26 11:02:40.203 5689 5689 E AndroidRuntime: 	at com.example.MainActivity.onCreate(MainActivity.java:42)
+05-26 11:02:40.204 5689 5689 E AndroidRuntime: Caused by: java.lang.NullPointerException
+05-26 11:02:45.000 5689 5689 I FirebaseApp: Firebase initialized
+05-26 11:02:50.000 1234 1234 D OtherProcess: Hello from other pid
+06-04 02:32:14.002 D/dalvikvm( 236): GC_CONCURRENT freed 512K
