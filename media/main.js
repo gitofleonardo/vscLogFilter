@@ -14,6 +14,12 @@
   const progressEl = document.getElementById('progress');
   const progressFillEl = document.getElementById('progress-fill');
   const progressTextEl = document.getElementById('progress-text');
+  const findBarEl = document.getElementById('find-bar');
+  const findInputEl = document.getElementById('find-input');
+  const findStatusEl = document.getElementById('find-status');
+  const findPrevEl = document.getElementById('find-prev');
+  const findNextEl = document.getElementById('find-next');
+  const findCloseEl = document.getElementById('find-close');
 
   const ROW_HEIGHT = 19;
   const BUFFER = 40;
@@ -55,6 +61,11 @@
   let selectedIndex = -1;
   let queryDebounce;
   let suggestionActive = -1;
+  let findActive = false;
+  let findQuery = '';
+  let findMatches = [];
+  let currentMatchIndex = -1;
+  let findDebounce;
 
   function formatCount(n) {
     if (n >= 1_000_000) {
@@ -167,6 +178,47 @@
     const msg = event.data;
     if (msg.type === 'update') {
       handleUpdate(msg);
+    } else if (msg.type === 'showFind') {
+      showFindBar();
+    } else if (msg.type === 'findNext') {
+      advanceFind(1);
+    } else if (msg.type === 'findPrevious') {
+      advanceFind(-1);
+    }
+  });
+
+  findInputEl.addEventListener('input', () => {
+    clearTimeout(findDebounce);
+    findDebounce = setTimeout(() => {
+      findQuery = findInputEl.value;
+      currentMatchIndex = findQuery ? 0 : -1;
+      rebuildFindMatches();
+      scrollToCurrentMatch();
+    }, 100);
+  });
+
+  findInputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      advanceFind(e.shiftKey ? -1 : 1);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      hideFindBar();
+    }
+  });
+
+  findPrevEl.addEventListener('click', () => advanceFind(-1));
+  findNextEl.addEventListener('click', () => advanceFind(1));
+  findCloseEl.addEventListener('click', () => hideFindBar());
+
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+      e.preventDefault();
+      showFindBar();
+      return;
+    }
+    if (findActive && e.key === 'Escape' && document.activeElement !== findInputEl) {
+      hideFindBar();
     }
   });
 
@@ -344,6 +396,111 @@
     }
     renderSelection();
     persistPanelState(msg);
+    if (findActive && findQuery) {
+      rebuildFindMatches();
+      scrollToCurrentMatch();
+    }
+  }
+
+  function showFindBar() {
+    findBarEl.classList.remove('hidden');
+    findActive = true;
+    findInputEl.focus();
+    findInputEl.select();
+    if (findQuery) {
+      rebuildFindMatches();
+      scrollToCurrentMatch();
+    }
+  }
+
+  function hideFindBar() {
+    findBarEl.classList.add('hidden');
+    findActive = false;
+    findMatches = [];
+    currentMatchIndex = -1;
+    updateFindStatus();
+    renderVisibleRows(true);
+    listEl.focus();
+  }
+
+  function rebuildFindMatches() {
+    findMatches = [];
+    if (!findQuery) {
+      updateFindStatus();
+      return;
+    }
+
+    const needle = findQuery.toLowerCase();
+    for (let rowIndex = 0; rowIndex < filteredIds.length; rowIndex++) {
+      const row = rowCache.get(filteredIds[rowIndex]);
+      const text = row?.fullText || '';
+      const hay = text.toLowerCase();
+      let idx = 0;
+      while (idx < hay.length) {
+        const found = hay.indexOf(needle, idx);
+        if (found === -1) {
+          break;
+        }
+        findMatches.push({ rowIndex, start: found, end: found + needle.length });
+        idx = found + 1;
+      }
+    }
+
+    if (findMatches.length === 0) {
+      currentMatchIndex = -1;
+    } else if (currentMatchIndex < 0 || currentMatchIndex >= findMatches.length) {
+      currentMatchIndex = 0;
+    }
+    updateFindStatus();
+  }
+
+  function updateFindStatus() {
+    if (!findQuery) {
+      findStatusEl.textContent = '';
+      return;
+    }
+    if (findMatches.length === 0) {
+      findStatusEl.textContent = 'No results';
+      return;
+    }
+    findStatusEl.textContent = `${currentMatchIndex + 1} of ${findMatches.length}`;
+  }
+
+  function advanceFind(delta) {
+    if (!findActive) {
+      showFindBar();
+      return;
+    }
+    if (!findQuery) {
+      findInputEl.focus();
+      return;
+    }
+    if (!findMatches.length) {
+      rebuildFindMatches();
+    }
+    if (!findMatches.length) {
+      return;
+    }
+    currentMatchIndex = (currentMatchIndex + delta + findMatches.length) % findMatches.length;
+    updateFindStatus();
+    scrollToCurrentMatch();
+  }
+
+  function scrollToCurrentMatch() {
+    if (currentMatchIndex < 0 || !findMatches.length) {
+      renderVisibleRows(true);
+      return;
+    }
+
+    const { rowIndex } = findMatches[currentMatchIndex];
+    const rowTop = prefixOffsets[rowIndex];
+    const height = rowHeightAt(rowIndex);
+    const viewTop = listEl.scrollTop;
+    const viewBottom = viewTop + listEl.clientHeight;
+    if (rowTop < viewTop || rowTop + height > viewBottom) {
+      listEl.scrollTop = Math.max(0, rowTop - Math.floor(listEl.clientHeight / 3));
+    }
+    renderVisibleRows(true);
   }
 
   function rowLineCount(row) {
@@ -452,7 +609,7 @@
 
       el.innerHTML =
         `<span class="gutter">${lineNo}</span>` +
-        `<pre class="line-text">${highlightFullText(text)}</pre>`;
+        `<pre class="line-text">${highlightRowText(text, i)}</pre>`;
 
       el.addEventListener('click', () => selectIndex(i));
       el.addEventListener('dblclick', () => {
@@ -706,12 +863,20 @@
     return { text, end: i };
   }
 
-  function highlightFullText(text) {
+  function highlightRowText(text, rowIndex) {
+    const ranges = collectQueryHighlightRanges(text);
+    if (findActive && findQuery) {
+      collectFindHighlightRanges(text, rowIndex, ranges);
+    }
+    return renderHighlightRanges(text, ranges);
+  }
+
+  function collectQueryHighlightRanges(text) {
+    const ranges = [];
     if (!text || !highlightTerms.length) {
-      return escapeHtml(text);
+      return ranges;
     }
 
-    const ranges = [];
     const hay = text.toLowerCase();
     for (const term of highlightTerms) {
       if (!term.text) {
@@ -725,7 +890,7 @@
             const before = idx === 0 || /\s/.test(hay[idx - 1]);
             const after = idx + needle.length === hay.length || /\s/.test(hay[idx + needle.length]);
             if (before && after) {
-              ranges.push({ start: idx, end: idx + needle.length });
+              ranges.push({ start: idx, end: idx + needle.length, className: 'match-hl' });
             }
             idx += needle.length;
           } else {
@@ -740,34 +905,75 @@
         if (found === -1) {
           break;
         }
-        ranges.push({ start: found, end: found + needle.length });
+        ranges.push({ start: found, end: found + needle.length, className: 'match-hl' });
         idx = found + 1;
       }
     }
+    return ranges;
+  }
 
+  function collectFindHighlightRanges(text, rowIndex, ranges) {
+    const needle = findQuery.toLowerCase();
+    const hay = text.toLowerCase();
+    let idx = 0;
+    while (idx < hay.length) {
+      const found = hay.indexOf(needle, idx);
+      if (found === -1) {
+        break;
+      }
+      const current = findMatches[currentMatchIndex];
+      const isCurrent =
+        current &&
+        current.rowIndex === rowIndex &&
+        current.start === found &&
+        current.end === found + needle.length;
+      ranges.push({
+        start: found,
+        end: found + needle.length,
+        className: isCurrent ? 'find-hl find-current' : 'find-hl',
+      });
+      idx = found + 1;
+    }
+  }
+
+  function renderHighlightRanges(text, ranges) {
     if (!ranges.length) {
       return escapeHtml(text);
     }
 
-    ranges.sort((a, b) => a.start - b.start || a.end - b.end);
-    const merged = [];
+    const points = new Set([0, text.length]);
     for (const r of ranges) {
-      const last = merged[merged.length - 1];
-      if (last && r.start <= last.end) {
-        last.end = Math.max(last.end, r.end);
-      } else {
-        merged.push({ start: r.start, end: r.end });
-      }
+      points.add(r.start);
+      points.add(r.end);
     }
+    const bounds = [...points].sort((a, b) => a - b);
+    const classPriority = {
+      'find-hl find-current': 3,
+      'find-hl': 2,
+      'match-hl': 1,
+    };
 
     let html = '';
-    let pos = 0;
-    for (const r of merged) {
-      html += escapeHtml(text.slice(pos, r.start));
-      html += '<mark class="match-hl">' + escapeHtml(text.slice(r.start, r.end)) + '</mark>';
-      pos = r.end;
+    for (let i = 0; i < bounds.length - 1; i++) {
+      const start = bounds[i];
+      const end = bounds[i + 1];
+      if (start >= end) {
+        continue;
+      }
+      let bestClass = '';
+      let bestPriority = 0;
+      for (const r of ranges) {
+        if (r.start <= start && r.end >= end) {
+          const priority = classPriority[r.className] || 0;
+          if (priority > bestPriority) {
+            bestPriority = priority;
+            bestClass = r.className;
+          }
+        }
+      }
+      const chunk = escapeHtml(text.slice(start, end));
+      html += bestClass ? `<mark class="${bestClass}">${chunk}</mark>` : chunk;
     }
-    html += escapeHtml(text.slice(pos));
     return html;
   }
 

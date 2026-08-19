@@ -79,6 +79,18 @@ export class LogFilterSession {
     this.panel.reveal(this.panel.viewColumn, true);
   }
 
+  showFind(): void {
+    void this.panel.webview.postMessage({ type: 'showFind' });
+  }
+
+  findNext(): void {
+    void this.panel.webview.postMessage({ type: 'findNext' });
+  }
+
+  findPrevious(): void {
+    void this.panel.webview.postMessage({ type: 'findPrevious' });
+  }
+
   setQuery(query: string): void {
     this.query = query;
     this.scheduleFilter();
@@ -517,6 +529,27 @@ export class LogFilterSessionManager {
 
   onDocumentChanged(uri: vscode.Uri): void {
     this.sessions.get(uri.toString())?.scheduleReparse();
+  }
+
+  private getActiveSession(): LogFilterSession | undefined {
+    for (const session of this.sessions.values()) {
+      if (session.panel.active) {
+        return session;
+      }
+    }
+    return undefined;
+  }
+
+  showFind(): void {
+    this.getActiveSession()?.showFind();
+  }
+
+  findNext(): void {
+    this.getActiveSession()?.findNext();
+  }
+
+  findPrevious(): void {
+    this.getActiveSession()?.findPrevious();
   }
 
   disposeAll(): void {

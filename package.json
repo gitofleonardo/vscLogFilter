@@ -2,7 +2,7 @@
   "name": "vsc-log-filter",
   "displayName": "vscLogFilter",
   "description": "Filter offline Android logcat dumps in VS Code with Android Studio-compatible query syntax.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "Apache-2.0",
   "homepage": "https://github.com/gitofleonardo/vscLogFilter",
   "bugs": {
@@ -57,6 +57,18 @@
       {
         "command": "logFilter.clearQuery",
         "title": "Log Filter: Clear Query"
+      },
+      {
+        "command": "logFilter.showFind",
+        "title": "Log Filter: Find in Results"
+      },
+      {
+        "command": "logFilter.findNext",
+        "title": "Log Filter: Find Next"
+      },
+      {
+        "command": "logFilter.findPrevious",
+        "title": "Log Filter: Find Previous"
       }
     ],
     "menus": {
@@ -74,6 +86,22 @@
         "key": "ctrl+shift+l",
         "mac": "cmd+shift+l",
         "when": "editorTextFocus"
+      },
+      {
+        "command": "logFilter.showFind",
+        "key": "ctrl+f",
+        "mac": "cmd+f",
+        "when": "activeWebviewPanelId == 'logFilter.panel'"
+      },
+      {
+        "command": "logFilter.findNext",
+        "key": "f3",
+        "when": "activeWebviewPanelId == 'logFilter.panel'"
+      },
+      {
+        "command": "logFilter.findPrevious",
+        "key": "shift+f3",
+        "when": "activeWebviewPanelId == 'logFilter.panel'"
       }
     ],
     "configuration": {

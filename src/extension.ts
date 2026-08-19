@@ -57,6 +57,18 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
 
+    vscode.commands.registerCommand('logFilter.showFind', () => {
+      manager.showFind();
+    }),
+
+    vscode.commands.registerCommand('logFilter.findNext', () => {
+      manager.findNext();
+    }),
+
+    vscode.commands.registerCommand('logFilter.findPrevious', () => {
+      manager.findPrevious();
+    }),
+
     vscode.workspace.onDidChangeTextDocument((e) => {
       manager.onDocumentChanged(e.document.uri);
     }),

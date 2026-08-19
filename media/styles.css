@@ -109,8 +109,25 @@ mark.match-hl {
   padding: 0;
 }
 
+mark.find-hl {
+  background: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 92, 0, 0.45));
+  color: inherit;
+  border-radius: 2px;
+  padding: 0;
+}
+
+mark.find-hl.find-current {
+  background: var(--vscode-editor-findMatchBackground, rgba(81, 92, 106, 0.8));
+  outline: 1px solid var(--vscode-editor-findMatchBorder, #515c6a);
+}
+
 .row.selected mark.match-hl {
   background: var(--vscode-editor-findMatchHighlightBorder, rgba(255, 255, 255, 0.3));
+}
+
+.row.selected mark.find-hl.find-current {
+  background: var(--vscode-list-activeSelectionBackground);
+  outline: 1px solid var(--vscode-focusBorder);
 }
 
 #suggestions {
@@ -217,6 +234,59 @@ mark.match-hl {
   min-width: 160px;
   text-align: right;
   flex: 1;
+}
+
+#find-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editorWidget-background);
+}
+
+#find-bar.hidden {
+  display: none;
+}
+
+#find-input {
+  flex: 1;
+  min-width: 120px;
+  padding: 3px 6px;
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 2px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+
+#find-input:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+#find-status {
+  white-space: nowrap;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+  min-width: 72px;
+  text-align: center;
+}
+
+#find-bar button {
+  padding: 2px 8px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 2px;
+  background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.2));
+  color: var(--vscode-button-secondaryForeground, inherit);
+  cursor: pointer;
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+
+#find-bar button:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.35));
 }
 
 #list {

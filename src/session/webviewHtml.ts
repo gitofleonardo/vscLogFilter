@@ -29,6 +29,13 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     <div id="progress-track"><div id="progress-fill"></div></div>
     <span id="progress-text">Parsing…</span>
   </div>
+  <div id="find-bar" class="hidden" role="search">
+    <input id="find-input" type="text" placeholder="Find in results…" spellcheck="false" autocomplete="off" aria-label="Find in results" />
+    <span id="find-status" aria-live="polite"></span>
+    <button id="find-prev" type="button" title="Previous match (Shift+F3)">↑</button>
+    <button id="find-next" type="button" title="Next match (F3)">↓</button>
+    <button id="find-close" type="button" title="Close (Escape)">×</button>
+  </div>
   <div id="list" tabindex="0">
     <div id="empty-state">Enter a filter query to show matching log lines</div>
     <div id="scroll-content">
