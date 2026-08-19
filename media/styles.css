@@ -109,10 +109,6 @@ mark.match-hl {
   padding: 0;
 }
 
-.row.selected mark.match-hl {
-  background: var(--vscode-editor-findMatchHighlightBorder, rgba(255, 255, 255, 0.3));
-}
-
 #suggestions {
   position: absolute;
   top: 100%;
@@ -219,91 +215,47 @@ mark.match-hl {
   flex: 1;
 }
 
-#list {
+#editor-wrap {
   flex: 1;
-  overflow: auto;
   position: relative;
-  outline: none;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   background: var(--vscode-editor-background);
 }
 
+#editor-container.hidden {
+  display: none;
+}
+
+#editor-container {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+
 #empty-state {
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 100%;
-  min-height: 120px;
   padding: 24px;
   color: var(--vscode-descriptionForeground);
   font-size: 0.95em;
   text-align: center;
   user-select: none;
+  pointer-events: none;
+  z-index: 1;
 }
 
 #empty-state.hidden {
   display: none;
 }
 
-#scroll-content.hidden {
-  display: none;
-}
-
-#scroll-content {
-  position: relative;
-  min-width: 100%;
-}
-
-#rows {
-  position: absolute;
-  left: 0;
-  top: 0;
-  min-width: 100%;
-}
-
-.row {
-  display: flex;
-  flex-direction: row;
-  align-items: flex-start;
-  min-width: max-content;
-  cursor: default;
-  font-family: var(--vscode-editor-font-family, Consolas, 'Courier New', monospace);
-  font-size: var(--vscode-editor-font-size, 13px);
-  line-height: var(--editor-line-height, 19px);
-}
-
-.row:hover {
-  background: var(--vscode-editor-lineHighlightBackground, rgba(255, 255, 255, 0.04));
-}
-
-.row.selected {
-  background: var(--vscode-list-activeSelectionBackground);
-  color: var(--vscode-list-activeSelectionForeground);
-}
-
-.gutter {
-  flex: 0 0 var(--gutter-width, 56px);
-  width: var(--gutter-width, 56px);
-  padding: 0 10px 0 0;
-  text-align: right;
-  color: var(--vscode-editorLineNumber-foreground, #858585);
-  user-select: none;
-  font-variant-numeric: tabular-nums;
-  border-right: 1px solid var(--vscode-editorGroup-border, rgba(128, 128, 128, 0.35));
-  background: var(--vscode-editor-background);
-}
-
-.line-text {
-  flex: 1 0 auto;
-  margin: 0;
-  padding: 0 0 0 12px;
-  white-space: pre;
-  overflow: visible;
-  font-family: inherit;
-  font-size: inherit;
-  line-height: inherit;
-  color: inherit;
-  background: transparent;
-  border: none;
+.monaco-editor .logfilter-term-highlight {
+  background: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 92, 0, 0.45));
+  border-radius: 2px;
 }
 
 #statusbar {
