@@ -9,6 +9,7 @@ import { logError } from '../logChannel';
 export interface ScanProgress {
   linesProcessed: number;
   entryCount: number;
+  percent?: number;
 }
 
 export interface IndexMeta {
@@ -82,6 +83,12 @@ export class WorkerParser {
     const worker = this.ensureWorker();
     this.parseVersion = version;
 
+    let latest: ScanProgress = { linesProcessed: 0, entryCount: 0 };
+    const reportScan = (patch: Partial<ScanProgress>) => {
+      latest = { ...latest, ...patch };
+      onScan?.(latest);
+    };
+
     await this.runParse(
       worker,
       version,
@@ -90,11 +97,12 @@ export class WorkerParser {
         await forEachLineChunk(filePath, WORKER_CHUNK_LINES, {
           fileSize,
           shouldContinue,
+          onProgress: (percent) => reportScan({ percent }),
           onChunk: (lines, lineOffset) =>
             this.postChunk(w, v, lines, lineOffset, shouldContinue),
         });
       },
-      onScan,
+      reportScan,
     );
 
     return this.indexMeta!;
@@ -118,6 +126,12 @@ export class WorkerParser {
     const totalLines = doc.lineCount;
     let lineIndex = 0;
 
+    let latest: ScanProgress = { linesProcessed: 0, entryCount: 0 };
+    const reportScan = (patch: Partial<ScanProgress>) => {
+      latest = { ...latest, ...patch };
+      onScan?.(latest);
+    };
+
     await this.runParse(
       worker,
       version,
@@ -134,13 +148,12 @@ export class WorkerParser {
           }
           await this.postChunk(w, v, lines, lineIndex, shouldContinue);
           lineIndex = end;
-          onScan?.({
-            linesProcessed: lineIndex,
-            entryCount: lineIndex,
+          reportScan({
+            percent: totalLines > 0 ? Math.min(99, Math.round((lineIndex / totalLines) * 100)) : 0,
           });
         }
       },
-      onScan,
+      reportScan,
     );
 
     return this.indexMeta!;

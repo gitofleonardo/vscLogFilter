@@ -375,9 +375,15 @@
 
     if (msg.parseState === 'parsing') {
       progressEl.classList.remove('hidden');
-      progressEl.classList.add('indeterminate');
-      progressFillEl.style.width = '0%';
       const scan = msg.scanStats;
+      const percent = scan?.percent;
+      if (typeof percent === 'number' && percent >= 0) {
+        progressEl.classList.remove('indeterminate');
+        progressFillEl.style.width = `${Math.min(100, percent)}%`;
+      } else {
+        progressEl.classList.add('indeterminate');
+        progressFillEl.style.removeProperty('width');
+      }
       progressTextEl.textContent = scan
         ? formatScanStatus(scan)
         : 'Scanning…';

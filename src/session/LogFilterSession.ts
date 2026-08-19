@@ -23,7 +23,7 @@ export class LogFilterSession {
   parseResult?: ParseResult;
   version = 0;
   warnings: string[] = [];
-  private scanStats?: { linesProcessed: number; entryCount: number };
+  private scanStats?: { linesProcessed: number; entryCount: number; percent?: number };
   private lastScanUiMs = 0;
   private cachedTags: string[] = [];
   private disposables: vscode.Disposable[] = [];
@@ -193,7 +193,7 @@ export class LogFilterSession {
       const source = chooseParseSource(this.uri.scheme, openDoc, stat.size);
       logInfo(`Indexing ${this.uri.fsPath} (${formatSize(stat.size)}, source=${source})`);
 
-      const onScan = (scan: { linesProcessed: number; entryCount: number }) => {
+      const onScan = (scan: { linesProcessed: number; entryCount: number; percent?: number }) => {
         if (currentVersion !== this.version) {
           return;
         }
