@@ -1,0 +1,75 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install, test, and package
+        run: npm ci && ./package.sh --test
+
+      - name: Verify tag matches package.json version
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$VERSION" != "$TAG" ]; then
+            echo "Tag v${TAG} does not match package.json version ${VERSION}." >&2
+            exit 1
+          fi
+
+      - name: Generate changelog
+        run: |
+          CURRENT="${GITHUB_REF_NAME}"
+          PREV="$(git tag --sort=-version:refname | grep -v "^${CURRENT}$" | head -n 1 || true)"
+          {
+            echo "## vscLogFilter ${CURRENT#v}"
+            echo ""
+            if [ -n "$PREV" ]; then
+              echo "Changes since \`${PREV}\`:"
+            else
+              echo "Changes:"
+            fi
+            echo ""
+            if [ -n "$PREV" ]; then
+              git log "${PREV}..${CURRENT}" --pretty=format:"- %s (%h)"
+            else
+              git log --pretty=format:"- %s (%h)" -30
+            fi
+            echo ""
+            echo "### Install"
+            echo ""
+            echo "Download the \`.vsix\` below, then:"
+            echo "\`code --install-extension vsc-log-filter-${CURRENT#v}.vsix\`"
+          } > release-notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: vscLogFilter ${{ github.ref_name }}
+          body_path: release-notes.md
+          files: "*.vsix"
+          generate_release_notes: false
