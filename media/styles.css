@@ -191,12 +191,32 @@ mark.match-hl {
   transition: width 0.15s ease;
 }
 
+#progress.indeterminate #progress-track {
+  position: relative;
+  overflow: hidden;
+}
+
+#progress.indeterminate #progress-fill {
+  width: 35%;
+  animation: progress-indeterminate 1.4s ease-in-out infinite;
+}
+
+@keyframes progress-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
 #progress-text {
   white-space: nowrap;
   font-size: 0.85em;
   color: var(--vscode-descriptionForeground);
-  min-width: 100px;
+  min-width: 160px;
   text-align: right;
+  flex: 1;
 }
 
 #list {

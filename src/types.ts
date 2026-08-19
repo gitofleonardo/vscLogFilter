@@ -15,8 +15,12 @@ export interface LogEntry {
 
 export interface ParseResult {
   entries: LogEntry[];
+  /** Total log entries when `entries` is omitted or filtered subset. */
+  totalEntries?: number;
   fileMaxTime?: number;
   format: 'threadtime' | 'time' | 'mixed' | 'unknown';
+  tags?: string[];
+  filterWarnings?: string[];
 }
 
 export type ParseState = 'idle' | 'parsing' | 'ready' | 'error';

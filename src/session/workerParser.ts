@@ -2,136 +2,334 @@ import * as vscode from 'vscode';
 import { Worker } from 'worker_threads';
 import * as path from 'path';
 import type { ParseResult } from '../types';
+import { WORKER_CHUNK_LINES } from '../constants';
+import { forEachLineChunk } from '../log/fileLineStream';
+import { logError } from '../logChannel';
 
-const CHUNK_LINES = 5000;
+export interface ScanProgress {
+  linesProcessed: number;
+  entryCount: number;
+}
+
+export interface IndexMeta {
+  totalEntries: number;
+  fileMaxTime?: number;
+  format: ParseResult['format'];
+  tags: string[];
+}
 
 export class WorkerParser {
   private worker?: Worker;
-  private activeVersion = 0;
+  private parseVersion = 0;
+  private cacheKey?: string;
+  private indexMeta?: IndexMeta;
+  private pendingFilterJob?: {
+    query: string;
+    generation: number;
+    resolve: (result: ParseResult) => void;
+    reject: (err: Error) => void;
+  };
+  private filterDraining = false;
 
   constructor(private extensionPath: string) {}
 
-  parseDocument(
-    doc: vscode.TextDocument,
-    version: number,
-    fileMtimeMs: number,
-    onProgress?: (percent: number) => void,
-  ): Promise<ParseResult> {
-    this.cancel();
-    this.activeVersion = version;
+  get isIndexed(): boolean {
+    return this.indexMeta !== undefined && this.worker !== undefined;
+  }
 
-    return new Promise((resolve, reject) => {
+  matchesCache(cacheKey: string): boolean {
+    return this.isIndexed && this.cacheKey === cacheKey;
+  }
+
+  getIndexMeta(): IndexMeta | undefined {
+    return this.indexMeta;
+  }
+
+  invalidate(): void {
+    this.cacheKey = undefined;
+    this.indexMeta = undefined;
+    this.cancelPendingFilter();
+    if (this.worker) {
+      this.worker.postMessage({ type: 'cancel', version: this.parseVersion });
+      this.worker.removeAllListeners();
+      this.worker.terminate();
+      this.worker = undefined;
+    }
+    this.parseVersion++;
+  }
+
+  private ensureWorker(): Worker {
+    if (!this.worker) {
       const workerPath = path.join(this.extensionPath, 'dist', 'logParser.worker.js');
       this.worker = new Worker(workerPath);
+    }
+    return this.worker;
+  }
 
-      const totalLines = doc.lineCount;
-      let lineIndex = 0;
-      let pending = 0;
-      let finished = false;
-      let settled = false;
+  async buildIndexFromFile(
+    cacheKey: string,
+    filePath: string,
+    fileSize: number,
+    fileMtimeMs: number,
+    version: number,
+    onScan?: (progress: ScanProgress) => void,
+  ): Promise<IndexMeta> {
+    if (this.matchesCache(cacheKey)) {
+      return this.indexMeta!;
+    }
+    this.invalidate();
+    this.cacheKey = cacheKey;
+    const worker = this.ensureWorker();
+    this.parseVersion = version;
 
-      const cleanup = () => {
-        this.worker?.removeAllListeners();
-        this.worker?.terminate();
-        if (this.activeVersion === version) {
-          this.worker = undefined;
+    await this.runParse(
+      worker,
+      version,
+      (w, v) => w.postMessage({ type: 'init', fileMtimeMs, version: v }),
+      async (w, v, shouldContinue) => {
+        await forEachLineChunk(filePath, WORKER_CHUNK_LINES, {
+          fileSize,
+          shouldContinue,
+          onChunk: (lines, lineOffset) =>
+            this.postChunk(w, v, lines, lineOffset, shouldContinue),
+        });
+      },
+      onScan,
+    );
+
+    return this.indexMeta!;
+  }
+
+  async buildIndexFromDocument(
+    cacheKey: string,
+    doc: vscode.TextDocument,
+    fileMtimeMs: number,
+    version: number,
+    onScan?: (progress: ScanProgress) => void,
+  ): Promise<IndexMeta> {
+    if (this.matchesCache(cacheKey)) {
+      return this.indexMeta!;
+    }
+    this.invalidate();
+    this.cacheKey = cacheKey;
+    const worker = this.ensureWorker();
+    this.parseVersion = version;
+
+    const totalLines = doc.lineCount;
+    let lineIndex = 0;
+
+    await this.runParse(
+      worker,
+      version,
+      (w, v) => w.postMessage({ type: 'init', fileMtimeMs, version: v }),
+      async (w, v, shouldContinue) => {
+        while (lineIndex < totalLines) {
+          if (!shouldContinue()) {
+            throw new Error('Parse cancelled');
+          }
+          const end = Math.min(lineIndex + WORKER_CHUNK_LINES, totalLines);
+          const lines: string[] = [];
+          for (let i = lineIndex; i < end; i++) {
+            lines.push(doc.lineAt(i).text);
+          }
+          await this.postChunk(w, v, lines, lineIndex, shouldContinue);
+          lineIndex = end;
+          onScan?.({
+            linesProcessed: lineIndex,
+            entryCount: lineIndex,
+          });
+        }
+      },
+      onScan,
+    );
+
+    return this.indexMeta!;
+  }
+
+  filterQuery(query: string, generation: number): Promise<ParseResult> {
+    if (!this.worker || !this.indexMeta) {
+      return Promise.reject(new Error('Log index not ready'));
+    }
+
+    return new Promise((resolve, reject) => {
+      if (this.pendingFilterJob) {
+        this.pendingFilterJob.reject(new Error('Filter superseded'));
+      }
+      this.pendingFilterJob = { query, generation, resolve, reject };
+      void this.drainFilterQueue();
+    });
+  }
+
+  private cancelPendingFilter(): void {
+    if (this.pendingFilterJob) {
+      this.pendingFilterJob.reject(new Error('Filter superseded'));
+      this.pendingFilterJob = undefined;
+    }
+  }
+
+  private async drainFilterQueue(): Promise<void> {
+    if (this.filterDraining) {
+      return;
+    }
+    this.filterDraining = true;
+    try {
+      while (this.pendingFilterJob) {
+        const job = this.pendingFilterJob;
+        this.pendingFilterJob = undefined;
+        try {
+          const result = await this.executeFilter(job.query, job.generation);
+          if (this.pendingFilterJob) {
+            job.reject(new Error('Filter superseded'));
+            continue;
+          }
+          job.resolve(result);
+        } catch (err) {
+          const error = err instanceof Error ? err : new Error(String(err));
+          if (this.pendingFilterJob) {
+            job.reject(new Error('Filter superseded'));
+            continue;
+          }
+          job.reject(error);
+        }
+      }
+    } finally {
+      this.filterDraining = false;
+      if (this.pendingFilterJob) {
+        void this.drainFilterQueue();
+      }
+    }
+  }
+
+  private executeFilter(query: string, generation: number): Promise<ParseResult> {
+    const worker = this.worker!;
+    return new Promise((resolve, reject) => {
+      const onMessage = (msg: {
+        type: string;
+        result?: ParseResult;
+        version?: number;
+        error?: string;
+      }) => {
+        if (msg.version !== generation) {
+          return;
+        }
+        switch (msg.type) {
+          case 'filtered':
+            worker.off('message', onMessage);
+            resolve(msg.result!);
+            break;
+          case 'error':
+            worker.off('message', onMessage);
+            reject(new Error(msg.error ?? 'Filter error'));
+            break;
         }
       };
+      worker.on('message', onMessage);
+      worker.postMessage({ type: 'filter', query, version: generation });
+    });
+  }
+
+  dispose(): void {
+    this.invalidate();
+  }
+
+  private postChunk(
+    worker: Worker,
+    version: number,
+    lines: string[],
+    lineOffset: number,
+    shouldContinue: () => boolean,
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (!shouldContinue()) {
+        reject(new Error('Parse cancelled'));
+        return;
+      }
+      const onMessage = (msg: { type: string; version?: number }) => {
+        if (msg.type === 'chunkAck' && msg.version === version) {
+          worker.off('message', onMessage);
+          resolve();
+        }
+      };
+      worker.on('message', onMessage);
+      worker.postMessage({ type: 'chunk', lines, lineOffset, version });
+    });
+  }
+
+  private runParse(
+    worker: Worker,
+    version: number,
+    init: (worker: Worker, version: number) => void,
+    feed: (
+      worker: Worker,
+      version: number,
+      shouldContinue: () => boolean,
+    ) => Promise<void>,
+    onScan?: (progress: ScanProgress) => void,
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const shouldContinue = () => !settled && version === this.parseVersion;
 
       const fail = (err: Error) => {
         if (settled) {
           return;
         }
         settled = true;
-        cleanup();
+        worker.removeAllListeners('message');
         reject(err);
       };
 
-      const succeed = (result: ParseResult) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        cleanup();
-        resolve(result);
-      };
-
-      const sendNextChunk = () => {
-        if (settled || finished || version !== this.activeVersion) {
-          if (!settled && version !== this.activeVersion) {
-            fail(new Error('Parse cancelled'));
-          }
-          return;
-        }
-        if (lineIndex >= totalLines) {
-          if (pending === 0) {
-            this.worker?.postMessage({ type: 'finish', version });
-          }
-          return;
-        }
-        const end = Math.min(lineIndex + CHUNK_LINES, totalLines);
-        const lines: string[] = [];
-        for (let i = lineIndex; i < end; i++) {
-          lines.push(doc.lineAt(i).text);
-        }
-        pending++;
-        this.worker?.postMessage({ type: 'chunk', lines, lineOffset: lineIndex, version });
-        lineIndex = end;
-        onProgress?.(Math.min(99, Math.round((lineIndex / totalLines) * 100)));
-      };
-
-      this.worker.on('message', (msg: {
+      worker.on('message', (msg: {
         type: string;
-        result?: ParseResult;
+        meta?: IndexMeta;
         version?: number;
         error?: string;
+        linesProcessed?: number;
+        entryCount?: number;
       }) => {
-        if (version !== this.activeVersion) {
+        if (msg.version !== undefined && msg.version !== version) {
           return;
         }
         switch (msg.type) {
           case 'ready':
-            sendNextChunk();
+            void feed(worker, version, shouldContinue)
+              .then(() => {
+                if (shouldContinue()) {
+                  worker.postMessage({ type: 'finish', version });
+                }
+              })
+              .catch((err) => fail(err instanceof Error ? err : new Error(String(err))));
             break;
-          case 'chunkAck':
-            pending--;
-            sendNextChunk();
+          case 'progress':
+            onScan?.({
+              linesProcessed: msg.linesProcessed ?? 0,
+              entryCount: msg.entryCount ?? 0,
+            });
             break;
-          case 'done':
-            finished = true;
-            if (msg.version !== version) {
-              fail(new Error('Stale parse result'));
+          case 'parsed':
+            if (settled) {
               return;
             }
-            onProgress?.(100);
-            succeed(msg.result!);
+            settled = true;
+            this.indexMeta = msg.meta!;
+            worker.removeAllListeners('message');
+            resolve();
             break;
           case 'cancelled':
             fail(new Error('Parse cancelled'));
             break;
           case 'error':
-            finished = true;
             fail(new Error(msg.error ?? 'Worker error'));
             break;
         }
       });
 
-      this.worker.on('error', (err) => fail(err instanceof Error ? err : new Error(String(err))));
+      worker.on('error', (err) => {
+        logError('Worker thread error', err);
+        fail(err instanceof Error ? err : new Error(String(err)));
+      });
 
-      this.worker.postMessage({ type: 'init', fileMtimeMs, version });
+      init(worker, version);
     });
-  }
-
-  cancel(): void {
-    if (this.worker) {
-      this.worker.postMessage({ type: 'cancel', version: this.activeVersion });
-      this.worker.terminate();
-      this.worker = undefined;
-    }
-    this.activeVersion++;
-  }
-
-  dispose(): void {
-    this.cancel();
   }
 }

@@ -1,4 +1,5 @@
 import type { LogEntry, ParseResult } from '../types';
+import { LOGCAT_DETECT_SAMPLE_LINES } from '../constants';
 import { inferBaseYear, parseThreadtimeTimestamp } from './timestamp';
 
 const THREADTIME_LINE =
@@ -26,7 +27,7 @@ export function isLogcatLine(line: string): boolean {
 }
 
 export function isLogcatDocumentContent(text: string): boolean {
-  const lines = text.split('\n').slice(0, 50);
+  const lines = text.split('\n').slice(0, LOGCAT_DETECT_SAMPLE_LINES);
   for (const line of lines) {
     if (THREADTIME_HEURISTIC.test(line)) {
       return true;
@@ -86,6 +87,18 @@ export function parseLogLinesChunk(
   for (let i = 0; i < lines.length; i++) {
     parseLine(acc, lines[i], lineOffset + i);
   }
+}
+
+export function materializeRawSlice(
+  rawSlice: RawEntry[],
+  startId: number,
+  baseYear: number,
+): LogEntry[] {
+  return rawSlice.map((e, i) => ({
+    ...e,
+    id: startId + i,
+    parsedTime: e.timestamp ? parseThreadtimeTimestamp(e.timestamp, baseYear) : undefined,
+  }));
 }
 
 export function finalizeParseAccumulator(

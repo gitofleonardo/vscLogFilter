@@ -1,17 +1,16 @@
 import * as vscode from 'vscode';
 import type { LogEntry, ParseResult, SerializedLogEntry } from '../types';
-import { parseLogDocument } from '../log/parser';
-import { parseAndFilter, extractHighlightTerms } from '../query';
+import { TAG_SUGGESTION_LIMIT } from '../constants';
+import { getLogFilterSettings } from '../config';
+import { extractHighlightTerms } from '../query';
 import { getWebviewHtml } from './webviewHtml';
 import { WorkerParser } from './workerParser';
 import { LOG_FILTER_PANEL_VIEW_TYPE, type LogFilterPanelState } from './panelState';
+import { chooseParseSource } from './parseSource';
+import { goToSourceLine } from './goToSourceLine';
+import { logError, logInfo } from '../logChannel';
 
 export { LOG_FILTER_PANEL_VIEW_TYPE };
-
-const SMALL_FILE_BYTES = 10 * 1024 * 1024;
-const LARGE_FILE_BYTES = 100 * 1024 * 1024;
-const DEBOUNCE_MS = 200;
-const QUERY_DEBOUNCE_MS = 300;
 
 export class LogFilterSession {
   readonly uri: vscode.Uri;
@@ -24,9 +23,13 @@ export class LogFilterSession {
   parseResult?: ParseResult;
   version = 0;
   warnings: string[] = [];
+  private scanStats?: { linesProcessed: number; entryCount: number };
+  private lastScanUiMs = 0;
+  private cachedTags: string[] = [];
   private disposables: vscode.Disposable[] = [];
   private parseTimer?: ReturnType<typeof setTimeout>;
   private queryTimer?: ReturnType<typeof setTimeout>;
+  private filterGeneration = 0;
   private workerParser: WorkerParser;
 
   constructor(
@@ -52,22 +55,19 @@ export class LogFilterSession {
   }
 
   private async startParsing(): Promise<void> {
-    let doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === this.uri.toString());
-    if (!doc) {
-      try {
-        doc = await vscode.workspace.openTextDocument(this.uri);
-      } catch {
-        const waitForDoc = vscode.workspace.onDidOpenTextDocument((opened) => {
-          if (opened.uri.toString() === this.uri.toString()) {
-            waitForDoc.dispose();
-            void this.reparse();
-          }
-        });
-        this.disposables.push(waitForDoc);
-        return;
-      }
-    }
     void this.reparse();
+  }
+
+  private findOpenDocument(): vscode.TextDocument | undefined {
+    return vscode.workspace.textDocuments.find((d) => d.uri.toString() === this.uri.toString());
+  }
+
+  private async ensureDocument(): Promise<vscode.TextDocument> {
+    const existing = this.findOpenDocument();
+    if (existing) {
+      return existing;
+    }
+    return vscode.workspace.openTextDocument(this.uri);
   }
 
   updateSourceColumn(col: vscode.ViewColumn): void {
@@ -94,15 +94,11 @@ export class LogFilterSession {
   private onMessage(msg: { type: string; [k: string]: unknown }): void {
     switch (msg.type) {
       case 'queryChange':
-        this.query = String(msg.query ?? '');
-        this.scheduleFilter();
+        this.setQuery(String(msg.query ?? ''));
         this.persist();
         break;
       case 'goToSource':
         void this.goToSource(Number(msg.line));
-        break;
-      case 'requestWindow':
-        this.sendWindow(Number(msg.start), Number(msg.end));
         break;
       case 'selectEntry':
         break;
@@ -113,33 +109,50 @@ export class LogFilterSession {
     if (this.queryTimer) {
       clearTimeout(this.queryTimer);
     }
-    this.queryTimer = setTimeout(() => this.applyFilter(), QUERY_DEBOUNCE_MS);
+    const { queryDebounceMs } = getLogFilterSettings();
+    this.queryTimer = setTimeout(() => void this.applyFilter(), queryDebounceMs);
   }
 
   scheduleReparse(): void {
     if (this.parseTimer) {
       clearTimeout(this.parseTimer);
     }
-    this.workerParser.cancel();
-    this.parseTimer = setTimeout(() => void this.reparse(), DEBOUNCE_MS);
+    this.workerParser.invalidate();
+    const { parseDebounceMs } = getLogFilterSettings();
+    this.parseTimer = setTimeout(() => void this.reparse(), parseDebounceMs);
+  }
+
+  private cacheKey(mtimeMs: number): string {
+    return `${this.uri.fsPath}:${mtimeMs}`;
+  }
+
+  private metaToParseResult(meta: {
+    totalEntries: number;
+    fileMaxTime?: number;
+    format: ParseResult['format'];
+    tags: string[];
+  }): ParseResult {
+    return {
+      entries: [],
+      totalEntries: meta.totalEntries,
+      fileMaxTime: meta.fileMaxTime,
+      format: meta.format,
+      tags: meta.tags,
+    };
   }
 
   private async reparse(): Promise<void> {
-    const doc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === this.uri.toString());
-    if (!doc) {
-      return;
-    }
-
     this.version++;
     const currentVersion = this.version;
     this.parseState = 'parsing';
+    this.scanStats = undefined;
     this.postUpdate();
 
     try {
       const stat = await vscode.workspace.fs.stat(this.uri);
-      const useWorker = stat.size >= SMALL_FILE_BYTES;
 
-      if (stat.size >= LARGE_FILE_BYTES) {
+      const { confirmBeforeParseBytes } = getLogFilterSettings();
+      if (confirmBeforeParseBytes > 0 && stat.size >= confirmBeforeParseBytes) {
         const choice = await vscode.window.showWarningMessage(
           `Log file is large (${formatSize(stat.size)}). Parsing may take a while.`,
           'Continue',
@@ -152,31 +165,65 @@ export class LogFilterSession {
         }
       }
 
-      let result: ParseResult;
-      if (useWorker) {
-        result = await this.workerParser.parseDocument(
-          doc,
-          currentVersion,
-          stat.mtime,
-          (progress) => {
-            if (currentVersion === this.version) {
-              this.postUpdate(progress);
-            }
-          },
-        );
-      } else {
-        const lines = Array.from({ length: doc.lineCount }, (_, i) => doc.lineAt(i).text);
-        result = parseLogDocument(lines, stat.mtime);
+      const cacheKey = this.cacheKey(stat.mtime);
+      if (this.workerParser.matchesCache(cacheKey)) {
+        const meta = this.workerParser.getIndexMeta()!;
+        this.parseResult = this.metaToParseResult(meta);
+        this.cachedTags = meta.tags;
+        this.parseState = 'ready';
+        this.scanStats = undefined;
+        logInfo(`Reused indexed log (${meta.totalEntries} entries) for ${this.uri.fsPath}`);
+        await this.applyFilter();
+        return;
       }
+
+      const openDoc = this.findOpenDocument();
+      const source = chooseParseSource(this.uri.scheme, openDoc, stat.size);
+      logInfo(`Indexing ${this.uri.fsPath} (${formatSize(stat.size)}, source=${source})`);
+
+      const onScan = (scan: { linesProcessed: number; entryCount: number }) => {
+        if (currentVersion !== this.version) {
+          return;
+        }
+        const now = Date.now();
+        if (now - this.lastScanUiMs < 300) {
+          return;
+        }
+        this.lastScanUiMs = now;
+        this.scanStats = scan;
+        this.postUpdate();
+      };
+
+      const meta =
+        source === 'disk'
+          ? await this.workerParser.buildIndexFromFile(
+              cacheKey,
+              this.uri.fsPath,
+              stat.size,
+              stat.mtime,
+              currentVersion,
+              onScan,
+            )
+          : await this.workerParser.buildIndexFromDocument(
+              cacheKey,
+              openDoc ?? (await this.ensureDocument()),
+              stat.mtime,
+              currentVersion,
+              onScan,
+            );
 
       if (currentVersion !== this.version) {
         return;
       }
 
-      this.entries = result.entries;
-      this.parseResult = result;
+      this.parseResult = this.metaToParseResult(meta);
+      this.cachedTags = meta.tags;
+      this.entries = [];
+      this.filteredIds = [];
       this.parseState = 'ready';
-      this.applyFilter();
+      this.scanStats = undefined;
+      logInfo(`Indexed ${meta.totalEntries} entries (${meta.format}) from ${this.uri.fsPath}`);
+      await this.applyFilter();
     } catch (err) {
       if (currentVersion !== this.version) {
         return;
@@ -187,82 +234,108 @@ export class LogFilterSession {
       }
       this.parseState = 'error';
       this.warnings = [message];
+      logError(`Parse failed for ${this.uri.fsPath}`, err);
       this.postUpdate();
     }
   }
 
-  private applyFilter(): void {
+  private async applyFilter(): Promise<void> {
+    if (this.parseState !== 'ready' || !this.workerParser.isIndexed) {
+      return;
+    }
+
     if (!this.query.trim()) {
+      this.entries = [];
       this.filteredIds = [];
       this.warnings = [];
       this.postUpdate();
       return;
     }
-    const { matched, warnings } = parseAndFilter(
-      this.query,
-      this.entries,
-      this.parseResult?.fileMaxTime,
-    );
-    this.filteredIds = matched.map((e) => e.id);
-    this.warnings = warnings;
-    this.postUpdate();
-    this.sendWindow(0, Math.min(80, this.filteredIds.length));
+
+    const gen = ++this.filterGeneration;
+    try {
+      const result = await this.workerParser.filterQuery(this.query, gen);
+      if (gen !== this.filterGeneration) {
+        return;
+      }
+      this.entries = result.entries;
+      this.filteredIds = result.entries.map((e) => e.id);
+      this.warnings = result.filterWarnings ?? [];
+      this.postUpdate(this.buildAllRows());
+    } catch (err) {
+      if (gen !== this.filterGeneration) {
+        return;
+      }
+      const message = String(err);
+      if (message.includes('Parse cancelled') || message.includes('Filter superseded')) {
+        return;
+      }
+      this.warnings = [message];
+      logError(`Filter failed for ${this.uri.fsPath}`, err);
+      this.postUpdate();
+    }
   }
 
-  private postUpdate(parseProgress?: number): void {
+  private totalEntryCount(): number {
+    return this.parseResult?.totalEntries ?? this.entries.length;
+  }
+
+  private buildAllRows(): SerializedLogEntry[] {
+    return this.entries.map((e) => ({
+      id: e.id,
+      fullText: e.fullText,
+      lineNumber: e.lineNumber,
+    }));
+  }
+
+  private postUpdate(rows?: SerializedLogEntry[]): void {
     const fileName = this.uri.path.split('/').pop() ?? this.uri.fsPath;
-    const tagSet = new Set<string>();
-    for (const e of this.entries) {
-      if (e.tag) {
-        tagSet.add(e.tag);
-      }
-    }
-    const tags = [...tagSet].sort().slice(0, 100);
+    const tags =
+      this.cachedTags.length > 0
+        ? this.cachedTags
+        : [...new Set(this.entries.map((e) => e.tag).filter(Boolean) as string[])]
+            .sort()
+            .slice(0, TAG_SUGGESTION_LIMIT);
+    this.cachedTags = tags;
     const highlightTerms = extractHighlightTerms(this.query);
     let maxLineNumber = 0;
     for (const e of this.entries) {
       maxLineNumber = Math.max(maxLineNumber, e.lineNumber + 1);
     }
+
+    const scanning = this.parseState === 'parsing';
+    const scan = this.scanStats;
+    const total = scanning && scan ? scan.entryCount : this.totalEntryCount();
+    const matched = scanning ? 0 : this.filteredIds.length;
+
     this.panel.webview.postMessage({
       type: 'update',
       sourceUri: this.uri.toString(),
       sourceViewColumn: this.sourceViewColumn,
       query: this.query,
-      filteredIds: this.filteredIds,
-      stats: { total: this.entries.length, matched: this.filteredIds.length },
+      filteredIds: scanning ? [] : this.filteredIds,
+      stats: { total, matched },
       fileName,
-      format: this.parseResult?.format ?? 'unknown',
+      format: this.parseResult?.format ?? (scanning ? 'scanning' : 'unknown'),
       warnings: this.warnings,
       parseState: this.parseState,
-      parseProgress,
+      scanStats: scan,
       tags,
       highlightTerms,
       maxLineNumber,
+      rows,
     });
-  }
-
-  private sendWindow(start: number, end: number): void {
-    const slice = this.filteredIds.slice(start, end);
-    const rows: SerializedLogEntry[] = slice.map((id) => {
-      const e = this.entries[id];
-      return {
-        id: e.id,
-        fullText: e.fullText,
-        lineNumber: e.lineNumber,
-      };
-    });
-    this.panel.webview.postMessage({ type: 'windowData', start, end, rows });
   }
 
   private async goToSource(line: number): Promise<void> {
-    const doc = await vscode.workspace.openTextDocument(this.uri);
-    const editor = await vscode.window.showTextDocument(doc, {
-      viewColumn: this.sourceViewColumn,
-      preserveFocus: false,
-    });
-    const pos = new vscode.Position(line, 0);
-    editor.selection = new vscode.Selection(pos, pos);
-    editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+    try {
+      await goToSourceLine(this.uri, line, this.sourceViewColumn);
+    } catch (err) {
+      logError(`Go to source failed for ${this.uri.fsPath}:${line + 1}`, err);
+      void vscode.window.showWarningMessage(
+        `Could not jump to line ${line + 1} in ${this.uri.path.split('/').pop() ?? 'log file'}.`,
+      );
+    }
   }
 
   dispose(): void {
@@ -334,17 +407,18 @@ export class LogFilterSessionManager {
     });
   }
 
-  async open(editor: vscode.TextEditor): Promise<LogFilterSession | undefined> {
-    const uri = editor.document.uri;
+  async open(
+    uri: vscode.Uri,
+    sourceViewColumn: vscode.ViewColumn = vscode.ViewColumn.One,
+  ): Promise<LogFilterSession | undefined> {
     const key = uri.toString();
     const existing = this.sessions.get(key);
     if (existing) {
-      existing.updateSourceColumn(editor.viewColumn ?? vscode.ViewColumn.One);
+      existing.updateSourceColumn(sourceViewColumn);
       existing.reveal();
       return existing;
     }
 
-    const sourceCol = editor.viewColumn ?? vscode.ViewColumn.One;
     const fileName = uri.path.split('/').pop() ?? 'log';
     const panelOptions: vscode.WebviewPanelOptions & vscode.WebviewOptions = {
       enableScripts: true,
@@ -359,7 +433,7 @@ export class LogFilterSessionManager {
       panelOptions,
     );
 
-    const session = this.createSession(uri, panel, sourceCol);
+    const session = this.createSession(uri, panel, sourceViewColumn);
     this.sessions.set(key, session);
     panel.onDidDispose(() => {
       this.sessions.delete(key);

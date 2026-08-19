@@ -12,17 +12,7 @@ Android Studio Logcat-style log filtering for VS Code. Run **Log Filter: Open** 
 - **Virtual scrolling** for large result sets
 - **Double-click / Enter** to jump to source line
 - **Auto-reveal** filter tab when switching between open files
-- **Large files**: ≥10 MB uses Worker thread + chunked parsing; ≥100 MB shows confirmation; progress bar in Filter tab
-
-## Large files
-
-| File size | Behavior |
-|-----------|----------|
-| < 10 MB | Extension Host sync parse |
-| 10 MB – 100 MB | Worker thread, 5000 lines/chunk, progress bar |
-| ≥ 100 MB | Warning dialog before parsing |
-
-Editing the log while Filter is open debounces re-parse; stale Worker results are discarded.
+- **Large files**: reads the editor buffer when VS Code exposes it; otherwise streams from disk via Worker; optional size confirmation (see Settings)
 
 ## Usage
 
@@ -62,6 +52,16 @@ The query keeps `tag:` / `pid:` / `after:` as global AND conditions, uses `|` on
 | `(tag:a \| tag:b) & level:E` | Explicit grouping |
 
 **Not supported:** `package:` (use `pid:`), `tag~:` regex (shows warning).
+
+## Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `logFilter.confirmBeforeParseSizeMB` | `0` | Optional confirm before parsing large files (MB). `0` = off. |
+| `logFilter.parseDebounceMs` | `200` | Debounce after log edits before re-parse. |
+| `logFilter.queryDebounceMs` | `300` | Debounce after query edits before re-filter. |
+
+Parsing uses a Worker thread and streams file content when the editor buffer is unavailable (common for very large logs). Stale Worker results are discarded when the file or query changes.
 
 ## Development
 

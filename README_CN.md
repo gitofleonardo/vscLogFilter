@@ -12,17 +12,7 @@
 - **虚拟滚动**，适用于大量匹配结果
 - **双击 / Enter** 跳转到源文件对应行
 - **自动显示** 过滤标签：在已打开文件间切换时自动切到 Filter 标签
-- **大文件**：≥10 MB 使用 Worker 线程 + 分块解析；≥100 MB 弹出确认；Filter 标签显示进度条
-
-## 大文件
-
-| 文件大小 | 行为 |
-|----------|------|
-| < 10 MB | Extension Host 同步解析 |
-| 10 MB – 100 MB | Worker 线程，5000 行/块，显示进度条 |
-| ≥ 100 MB | 解析前弹出警告对话框 |
-
-Filter 打开时编辑日志会防抖后重新解析；过期的 Worker 结果会被丢弃。
+- **大文件**：VS Code 能读到编辑器 buffer 时用内存内容（保留未保存修改）；否则从磁盘流式读取；可选大小确认（见设置）
 
 ## 用法
 
@@ -62,6 +52,16 @@ tag:AlarmManager pid:2917 tencent | device after:10:50:00
 | `(tag:a \| tag:b) & level:E` | 显式分组 |
 
 **不支持：** `package:`（请用 `pid:`）、`tag~:` 正则（会显示警告）。
+
+## 设置
+
+| 设置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `logFilter.confirmBeforeParseSizeMB` | `0` | 可选：超过此大小（MB）解析前确认，`0` 关闭 |
+| `logFilter.parseDebounceMs` | `200` | 日志编辑后重新解析的防抖（ms） |
+| `logFilter.queryDebounceMs` | `300` | 查询编辑后重新过滤的防抖（ms） |
+
+解析统一走 Worker 线程；当编辑器 buffer 不可用时（超大日志常见）从磁盘流式读取。文件或查询变更时会丢弃过期的 Worker 结果。
 
 ## 开发
 

@@ -2,7 +2,7 @@
   "name": "vsc-log-filter",
   "displayName": "vscLogFilter",
   "description": "Filter offline Android logcat dumps in VS Code with Android Studio-compatible query syntax.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "Apache-2.0",
   "homepage": "https://github.com/gitofleonardo/vscLogFilter",
   "bugs": {
@@ -63,7 +63,7 @@
       "editor/title": [
         {
           "command": "logFilter.open",
-          "when": "editorIsOpen",
+          "when": "resourceScheme == file",
           "group": "navigation"
         }
       ]
@@ -75,7 +75,30 @@
         "mac": "cmd+shift+l",
         "when": "editorTextFocus"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Log Filter",
+      "properties": {
+        "logFilter.confirmBeforeParseSizeMB": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Ask for confirmation before parsing when a file exceeds this size (MB). 0 (default) disables the prompt."
+        },
+        "logFilter.parseDebounceMs": {
+          "type": "number",
+          "default": 200,
+          "minimum": 0,
+          "description": "Debounce delay (ms) before re-parsing after the log file changes."
+        },
+        "logFilter.queryDebounceMs": {
+          "type": "number",
+          "default": 300,
+          "minimum": 0,
+          "description": "Debounce delay (ms) before re-filtering after the query changes."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run build",

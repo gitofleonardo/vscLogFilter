@@ -16,7 +16,7 @@
   const progressTextEl = document.getElementById('progress-text');
 
   const ROW_HEIGHT = 19;
-  const BUFFER = 20;
+  const BUFFER = 40;
 
   let prefixOffsets = [0];
   let lastScrollTop = -1;
@@ -53,10 +53,22 @@
   let highlightTerms = [];
   let maxLineNumber = 1;
   let selectedIndex = -1;
-  let windowStart = 0;
-  let windowEnd = 0;
   let queryDebounce;
   let suggestionActive = -1;
+
+  function formatCount(n) {
+    if (n >= 1_000_000) {
+      return `${(n / 1_000_000).toFixed(1)}M`;
+    }
+    if (n >= 10_000) {
+      return `${Math.round(n / 1000)}k`;
+    }
+    return String(n);
+  }
+
+  function formatScanStatus(scan) {
+    return `Scanning… ${formatCount(scan.linesProcessed)} lines · ${formatCount(scan.entryCount)} entries`;
+  }
 
   queryEl.addEventListener('input', () => {
     syncQueryOverlay();
@@ -155,8 +167,6 @@
     const msg = event.data;
     if (msg.type === 'update') {
       handleUpdate(msg);
-    } else if (msg.type === 'windowData') {
-      handleWindowData(msg);
     }
   });
 
@@ -266,15 +276,27 @@
     const filterChanged = filteredKey !== lastFilteredKey;
     if (filterChanged) {
       lastFilteredKey = filteredKey;
-      rowCache.clear();
       lastScrollTop = -1;
       lastRenderedStart = -1;
       lastRenderedEnd = -1;
-      listEl.scrollTop = 0;
-      listEl.scrollLeft = 0;
     }
 
     filteredIds = msg.filteredIds || [];
+
+    if (msg.rows) {
+      rowCache.clear();
+      for (const row of msg.rows) {
+        rowCache.set(row.id, row);
+      }
+      if (filterChanged) {
+        listEl.scrollTop = 0;
+        listEl.scrollLeft = 0;
+      }
+    } else if (filterChanged) {
+      rowCache.clear();
+      listEl.scrollTop = 0;
+      listEl.scrollLeft = 0;
+    }
     knownTags = msg.tags || [];
     highlightTerms = msg.highlightTerms || [];
     maxLineNumber = msg.maxLineNumber || 1;
@@ -301,36 +323,27 @@
 
     if (msg.parseState === 'parsing') {
       progressEl.classList.remove('hidden');
-      const pct = msg.parseProgress ?? 0;
-      progressFillEl.style.width = `${pct}%`;
-      progressTextEl.textContent = msg.parseProgress !== undefined
-        ? `Parsing… ${pct}%`
-        : 'Parsing…';
+      progressEl.classList.add('indeterminate');
+      progressFillEl.style.width = '0%';
+      const scan = msg.scanStats;
+      progressTextEl.textContent = scan
+        ? formatScanStatus(scan)
+        : 'Scanning…';
     } else {
       progressEl.classList.add('hidden');
+      progressEl.classList.remove('indeterminate');
       progressFillEl.style.width = '0%';
     }
 
     updateGutterWidth();
     rebuildLayout();
     if (!showEmpty) {
-      requestWindow(0, estimateVisibleRows());
       renderVisibleRows(true);
     } else {
-      rowsEl.innerHTML = '';
+      rowsEl.replaceChildren();
     }
     renderSelection();
     persistPanelState(msg);
-  }
-
-  function handleWindowData(msg) {
-    windowStart = msg.start;
-    windowEnd = msg.end;
-    for (const row of msg.rows || []) {
-      rowCache.set(row.id, row);
-    }
-    rebuildLayout();
-    renderVisibleRows(true);
   }
 
   function rowLineCount(row) {
@@ -377,10 +390,6 @@
     return lo;
   }
 
-  function estimateVisibleRows() {
-    return Math.ceil(listEl.clientHeight / ROW_HEIGHT) + BUFFER * 2;
-  }
-
   function onScroll() {
     const scrollTop = listEl.scrollTop;
     if (lastScrollTop >= 0 && Math.abs(scrollTop - lastScrollTop) < 0.5) {
@@ -397,19 +406,11 @@
     end = Math.min(filteredIds.length, end + BUFFER);
 
     renderVisibleRows(false, start, end);
-
-    if (start < windowStart || end > windowEnd) {
-      requestWindow(start, end);
-    }
-  }
-
-  function requestWindow(start, end) {
-    vscode.postMessage({ type: 'requestWindow', start, end });
   }
 
   function renderVisibleRows(force, rangeStart, rangeEnd) {
     if (filteredIds.length === 0) {
-      rowsEl.innerHTML = '';
+      rowsEl.replaceChildren();
       return;
     }
 
@@ -432,9 +433,7 @@
     lastRenderedStart = start;
     lastRenderedEnd = end;
 
-    rowsEl.innerHTML = '';
-    rowsEl.style.transform = `translateY(${prefixOffsets[start]}px)`;
-
+    const fragment = document.createDocumentFragment();
     for (let i = start; i < end; i++) {
       const id = filteredIds[i];
       const row = rowCache.get(id);
@@ -461,8 +460,11 @@
         goToSelected();
       });
 
-      rowsEl.appendChild(el);
+      fragment.appendChild(el);
     }
+
+    rowsEl.style.transform = `translateY(${prefixOffsets[start]}px)`;
+    rowsEl.replaceChildren(fragment);
 
     listEl.scrollTop = scrollTop;
     listEl.scrollLeft = scrollLeft;
