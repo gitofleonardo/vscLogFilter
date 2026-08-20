@@ -20,6 +20,10 @@
   const findPrevEl = document.getElementById('find-prev');
   const findNextEl = document.getElementById('find-next');
   const findCloseEl = document.getElementById('find-close');
+  const filesBtnEl = document.getElementById('files-btn');
+  const filesCountEl = document.getElementById('files-count');
+  const filesMenuEl = document.getElementById('files-menu');
+  const filesDropdownEl = document.getElementById('files-dropdown');
 
   const ROW_HEIGHT = 19;
   const BUFFER = 40;
@@ -66,6 +70,11 @@
   let findMatches = [];
   let currentMatchIndex = -1;
   let findDebounce;
+  let primaryUri = '';
+  let selectedUris = [];
+  let openFiles = [];
+  let selectedFileCount = 1;
+  let filesMenuOpen = false;
 
   function formatCount(n) {
     if (n >= 1_000_000) {
@@ -178,12 +187,121 @@
     const msg = event.data;
     if (msg.type === 'update') {
       handleUpdate(msg);
+    } else if (msg.type === 'filesState') {
+      handleFilesState(msg);
     } else if (msg.type === 'showFind') {
       showFindBar();
     } else if (msg.type === 'findNext') {
       advanceFind(1);
     } else if (msg.type === 'findPrevious') {
       advanceFind(-1);
+    }
+  });
+
+  function setFilesMenuOpen(open) {
+    filesMenuOpen = open;
+    filesMenuEl.classList.toggle('hidden', !open);
+    filesBtnEl.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  function toggleFilesMenu() {
+    setFilesMenuOpen(!filesMenuOpen);
+  }
+
+  function handleFilesState(msg) {
+    primaryUri = msg.primaryUri || '';
+    selectedUris = Array.isArray(msg.selectedUris) ? msg.selectedUris.slice() : [];
+    openFiles = Array.isArray(msg.openFiles) ? msg.openFiles.slice() : [];
+    selectedFileCount = selectedUris.length || 1;
+    filesCountEl.textContent = `(${selectedFileCount})`;
+    renderFilesMenu();
+  }
+
+  function renderFilesMenu() {
+    const fragment = document.createDocumentFragment();
+    const selectedSet = new Set(selectedUris);
+
+    // Keep primary first in the menu when present.
+    const ordered = [];
+    const seen = new Set();
+    if (primaryUri) {
+      const primary = openFiles.find((f) => f.uri === primaryUri) || {
+        uri: primaryUri,
+        fileName: primaryUri.split('/').pop() || primaryUri,
+      };
+      ordered.push(primary);
+      seen.add(primaryUri);
+    }
+    for (const file of openFiles) {
+      if (!seen.has(file.uri)) {
+        ordered.push(file);
+        seen.add(file.uri);
+      }
+    }
+
+    for (const file of ordered) {
+      const locked = file.uri === primaryUri;
+      const item = document.createElement('label');
+      item.className = 'files-item' + (locked ? ' locked' : '');
+      item.title = file.uri;
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = selectedSet.has(file.uri) || locked;
+      checkbox.disabled = locked;
+      checkbox.dataset.uri = file.uri;
+
+      if (!locked) {
+        checkbox.addEventListener('change', () => {
+          const next = new Set(selectedUris);
+          if (checkbox.checked) {
+            next.add(file.uri);
+          } else {
+            next.delete(file.uri);
+          }
+          if (primaryUri) {
+            next.add(primaryUri);
+          }
+          vscode.postMessage({ type: 'filesSelectionChange', uris: [...next] });
+        });
+      }
+
+      const label = document.createElement('span');
+      label.className = 'files-item-label';
+      label.textContent = file.fileName || file.uri;
+
+      item.appendChild(checkbox);
+      item.appendChild(label);
+      fragment.appendChild(item);
+    }
+
+    if (ordered.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'files-item';
+      empty.textContent = 'No open text files';
+      fragment.appendChild(empty);
+    }
+
+    filesMenuEl.replaceChildren(fragment);
+  }
+
+  filesBtnEl.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleFilesMenu();
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!filesMenuOpen) {
+      return;
+    }
+    if (!filesDropdownEl.contains(e.target)) {
+      setFilesMenuOpen(false);
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && filesMenuOpen) {
+      setFilesMenuOpen(false);
     }
   });
 
@@ -366,6 +484,10 @@
     scrollContentEl.classList.toggle('hidden', showEmpty);
 
     filenameEl.textContent = `${msg.fileName || ''} (${msg.format || 'unknown'})`;
+    if (typeof msg.selectedFileCount === 'number') {
+      selectedFileCount = msg.selectedFileCount;
+      filesCountEl.textContent = `(${selectedFileCount})`;
+    }
 
     if (msg.warnings && msg.warnings.length) {
       warningsEl.textContent = msg.warnings.join('; ');
@@ -612,10 +734,14 @@
 
       const lineNo = row.lineNumber + 1;
       const text = row.fullText || '';
+      const showFilePrefix = selectedFileCount > 1 && row.fileName;
+      const prefixHtml = showFilePrefix
+        ? `<span class="file-prefix">${escapeHtml(row.fileName)}:</span>`
+        : '';
 
       el.innerHTML =
         `<span class="gutter">${lineNo}</span>` +
-        `<pre class="line-text">${highlightRowText(text, i)}</pre>`;
+        `<pre class="line-text">${prefixHtml}${highlightRowText(text, i)}</pre>`;
 
       el.addEventListener('click', () => selectIndex(i));
       el.addEventListener('dblclick', () => {
@@ -656,7 +782,11 @@
     const id = filteredIds[selectedIndex];
     const row = rowCache.get(id);
     if (row) {
-      vscode.postMessage({ type: 'goToSource', line: row.lineNumber });
+      vscode.postMessage({
+        type: 'goToSource',
+        line: row.lineNumber,
+        sourceUri: row.sourceUri || primaryUri,
+      });
     }
   }
 
@@ -984,4 +1114,5 @@
   }
 
   updateQuerySyntaxHighlight();
+  vscode.postMessage({ type: 'ready' });
 })();

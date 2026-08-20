@@ -4,25 +4,38 @@ import { TAG_SUGGESTION_LIMIT } from '../constants';
 import { getLogFilterSettings } from '../config';
 import { extractHighlightTerms } from '../query';
 import { getWebviewHtml } from './webviewHtml';
-import { WorkerParser } from './workerParser';
+import { WorkerParser, type IndexSource } from './workerParser';
 import { LOG_FILTER_PANEL_VIEW_TYPE, type LogFilterPanelState } from './panelState';
 import { chooseParseSource } from './parseSource';
 import { goToSourceLine } from './goToSourceLine';
+import { listOpenTextTabs, type OpenTextTabInfo } from '../openTextTabs';
 import { logError, logInfo } from '../logChannel';
 
 export { LOG_FILTER_PANEL_VIEW_TYPE };
+
+function shortFileName(uriString: string): string {
+  try {
+    const uri = vscode.Uri.parse(uriString);
+    return uri.path.split('/').pop() ?? uri.fsPath;
+  } catch {
+    return uriString;
+  }
+}
 
 export class LogFilterSession {
   readonly uri: vscode.Uri;
   panel: vscode.WebviewPanel;
   sourceViewColumn: vscode.ViewColumn;
   query = '';
+  /** Always includes primary `uri`; extras are optional open tabs. */
+  selectedUris: string[] = [];
   entries: LogEntry[] = [];
   filteredIds: number[] = [];
   parseState: 'idle' | 'parsing' | 'ready' | 'error' = 'idle';
   parseResult?: ParseResult;
   version = 0;
   warnings: string[] = [];
+  private openFiles: OpenTextTabInfo[] = [];
   private scanStats?: { linesProcessed: number; entryCount: number; percent?: number };
   private lastScanUiMs = 0;
   private cachedTags: string[] = [];
@@ -45,29 +58,40 @@ export class LogFilterSession {
     this.panel = panel;
     this.sourceViewColumn = sourceViewColumn;
     this.query = initialQuery;
+    this.selectedUris = [uri.toString()];
     this.workerParser = new WorkerParser(context.extensionPath);
 
     panel.webview.html = getWebviewHtml(panel.webview, extensionUri);
     panel.webview.onDidReceiveMessage((msg) => this.onMessage(msg), null, this.disposables);
     panel.onDidDispose(() => this.dispose(), null, this.disposables);
 
+    this.syncOpenFiles(listOpenTextTabs());
     void this.startParsing();
+  }
+
+  private primaryUriString(): string {
+    return this.uri.toString();
+  }
+
+  includesUri(uri: vscode.Uri | string): boolean {
+    const key = typeof uri === 'string' ? uri : uri.toString();
+    return this.selectedUris.includes(key);
   }
 
   private async startParsing(): Promise<void> {
     void this.reparse();
   }
 
-  private findOpenDocument(): vscode.TextDocument | undefined {
-    return vscode.workspace.textDocuments.find((d) => d.uri.toString() === this.uri.toString());
+  private findOpenDocument(uri: vscode.Uri): vscode.TextDocument | undefined {
+    return vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
   }
 
-  private async ensureDocument(): Promise<vscode.TextDocument> {
-    const existing = this.findOpenDocument();
+  private async ensureDocument(uri: vscode.Uri): Promise<vscode.TextDocument> {
+    const existing = this.findOpenDocument(uri);
     if (existing) {
       return existing;
     }
-    return vscode.workspace.openTextDocument(this.uri);
+    return vscode.workspace.openTextDocument(uri);
   }
 
   updateSourceColumn(col: vscode.ViewColumn): void {
@@ -103,14 +127,97 @@ export class LogFilterSession {
     this.persist();
   }
 
+  /** Replace open-file dropdown options; drop extras that are no longer open. */
+  syncOpenFiles(openFiles: OpenTextTabInfo[]): void {
+    this.openFiles = openFiles;
+    const openSet = new Set(openFiles.map((f) => f.uri));
+    const primary = this.primaryUriString();
+    if (!openSet.has(primary)) {
+      // Primary may still be indexing from disk even if tab list briefly lags.
+      openFiles = [{ uri: primary, fileName: shortFileName(primary) }, ...openFiles];
+      this.openFiles = openFiles;
+      openSet.add(primary);
+    }
+
+    const nextSelected = this.selectedUris.filter((u) => u === primary || openSet.has(u));
+    if (!nextSelected.includes(primary)) {
+      nextSelected.unshift(primary);
+    }
+    const selectionChanged =
+      nextSelected.length !== this.selectedUris.length ||
+      nextSelected.some((u, i) => u !== this.selectedUris[i]);
+    this.selectedUris = nextSelected;
+    this.pushFilesState();
+    if (selectionChanged) {
+      this.scheduleReparse();
+    }
+  }
+
+  setSelectedUris(uris: string[]): void {
+    const primary = this.primaryUriString();
+    const openSet = new Set(this.openFiles.map((f) => f.uri));
+    const next = [primary];
+    for (const u of uris) {
+      if (u === primary || next.includes(u)) {
+        continue;
+      }
+      if (openSet.has(u)) {
+        next.push(u);
+      }
+    }
+    const changed =
+      next.length !== this.selectedUris.length ||
+      next.some((u, i) => u !== this.selectedUris[i]);
+    if (!changed) {
+      this.pushFilesState();
+      return;
+    }
+    this.selectedUris = next;
+    this.pushFilesState();
+    this.scheduleReparse();
+  }
+
+  /** Remove an extra selected URI (no-op for primary). Returns whether selection changed. */
+  removeSelectedUri(uri: vscode.Uri | string): boolean {
+    const key = typeof uri === 'string' ? uri : uri.toString();
+    if (key === this.primaryUriString()) {
+      return false;
+    }
+    const before = this.selectedUris.length;
+    this.selectedUris = this.selectedUris.filter((u) => u !== key);
+    if (this.selectedUris.length === before) {
+      return false;
+    }
+    this.pushFilesState();
+    this.scheduleReparse();
+    return true;
+  }
+
+  private pushFilesState(): void {
+    void this.panel.webview.postMessage({
+      type: 'filesState',
+      primaryUri: this.primaryUriString(),
+      selectedUris: this.selectedUris,
+      openFiles: this.openFiles,
+    });
+  }
+
   private onMessage(msg: { type: string; [k: string]: unknown }): void {
     switch (msg.type) {
+      case 'ready':
+        this.pushFilesState();
+        break;
       case 'queryChange':
         this.setQuery(String(msg.query ?? ''));
         this.persist();
         break;
+      case 'filesSelectionChange': {
+        const uris = Array.isArray(msg.uris) ? msg.uris.map(String) : [];
+        this.setSelectedUris(uris);
+        break;
+      }
       case 'goToSource':
-        void this.goToSource(Number(msg.line));
+        void this.goToSource(Number(msg.line), msg.sourceUri ? String(msg.sourceUri) : undefined);
         break;
       case 'selectEntry':
         break;
@@ -134,8 +241,8 @@ export class LogFilterSession {
     this.parseTimer = setTimeout(() => void this.reparse(), parseDebounceMs);
   }
 
-  private cacheKey(mtimeMs: number): string {
-    return `${this.uri.fsPath}:${mtimeMs}`;
+  private cacheKeyForSources(parts: Array<{ uri: string; mtimeMs: number }>): string {
+    return parts.map((p) => `${p.uri}:${p.mtimeMs}`).join('|');
   }
 
   private metaToParseResult(meta: {
@@ -153,6 +260,46 @@ export class LogFilterSession {
     };
   }
 
+  private async buildIndexSources(
+    currentVersion: number,
+  ): Promise<{ sources: IndexSource[]; cacheKey: string; totalBytes: number }> {
+    const sources: IndexSource[] = [];
+    const keyParts: Array<{ uri: string; mtimeMs: number }> = [];
+    let totalBytes = 0;
+
+    for (const uriString of this.selectedUris) {
+      const uri = vscode.Uri.parse(uriString);
+      const stat = await vscode.workspace.fs.stat(uri);
+      totalBytes += stat.size;
+      keyParts.push({ uri: uriString, mtimeMs: stat.mtime });
+
+      const openDoc = this.findOpenDocument(uri);
+      const source = chooseParseSource(uri.scheme, openDoc, stat.size);
+      if (source === 'disk') {
+        sources.push({
+          kind: 'file',
+          sourceUri: uriString,
+          filePath: uri.fsPath,
+          fileSize: stat.size,
+          fileMtimeMs: stat.mtime,
+        });
+      } else {
+        sources.push({
+          kind: 'document',
+          sourceUri: uriString,
+          doc: openDoc ?? (await this.ensureDocument(uri)),
+          fileMtimeMs: stat.mtime,
+        });
+      }
+    }
+
+    if (currentVersion !== this.version) {
+      throw new Error('Parse cancelled');
+    }
+
+    return { sources, cacheKey: this.cacheKeyForSources(keyParts), totalBytes };
+  }
+
   private async reparse(): Promise<void> {
     this.version++;
     const currentVersion = this.version;
@@ -161,12 +308,12 @@ export class LogFilterSession {
     this.postUpdate();
 
     try {
-      const stat = await vscode.workspace.fs.stat(this.uri);
+      const { sources, cacheKey, totalBytes } = await this.buildIndexSources(currentVersion);
 
       const { confirmBeforeParseBytes } = getLogFilterSettings();
-      if (confirmBeforeParseBytes > 0 && stat.size >= confirmBeforeParseBytes) {
+      if (confirmBeforeParseBytes > 0 && totalBytes >= confirmBeforeParseBytes) {
         const choice = await vscode.window.showWarningMessage(
-          `Log file is large (${formatSize(stat.size)}). Parsing may take a while.`,
+          `Log files are large (${formatSize(totalBytes)}). Parsing may take a while.`,
           'Continue',
           'Cancel',
         );
@@ -177,21 +324,20 @@ export class LogFilterSession {
         }
       }
 
-      const cacheKey = this.cacheKey(stat.mtime);
       if (this.workerParser.matchesCache(cacheKey)) {
         const meta = this.workerParser.getIndexMeta()!;
         this.parseResult = this.metaToParseResult(meta);
         this.cachedTags = meta.tags;
         this.parseState = 'ready';
         this.scanStats = undefined;
-        logInfo(`Reused indexed log (${meta.totalEntries} entries) for ${this.uri.fsPath}`);
+        logInfo(
+          `Reused indexed log (${meta.totalEntries} entries) for ${this.selectedUris.length} file(s)`,
+        );
         await this.applyFilter();
         return;
       }
 
-      const openDoc = this.findOpenDocument();
-      const source = chooseParseSource(this.uri.scheme, openDoc, stat.size);
-      logInfo(`Indexing ${this.uri.fsPath} (${formatSize(stat.size)}, source=${source})`);
+      logInfo(`Indexing ${this.selectedUris.length} file(s) (${formatSize(totalBytes)})`);
 
       const onScan = (scan: { linesProcessed: number; entryCount: number; percent?: number }) => {
         if (currentVersion !== this.version) {
@@ -206,23 +352,12 @@ export class LogFilterSession {
         this.postUpdate();
       };
 
-      const meta =
-        source === 'disk'
-          ? await this.workerParser.buildIndexFromFile(
-              cacheKey,
-              this.uri.fsPath,
-              stat.size,
-              stat.mtime,
-              currentVersion,
-              onScan,
-            )
-          : await this.workerParser.buildIndexFromDocument(
-              cacheKey,
-              openDoc ?? (await this.ensureDocument()),
-              stat.mtime,
-              currentVersion,
-              onScan,
-            );
+      const meta = await this.workerParser.buildIndexFromSources(
+        cacheKey,
+        sources,
+        currentVersion,
+        onScan,
+      );
 
       if (currentVersion !== this.version) {
         return;
@@ -234,7 +369,9 @@ export class LogFilterSession {
       this.filteredIds = [];
       this.parseState = 'ready';
       this.scanStats = undefined;
-      logInfo(`Indexed ${meta.totalEntries} entries (${meta.format}) from ${this.uri.fsPath}`);
+      logInfo(
+        `Indexed ${meta.totalEntries} entries (${meta.format}) from ${this.selectedUris.length} file(s)`,
+      );
       await this.applyFilter();
     } catch (err) {
       if (currentVersion !== this.version) {
@@ -293,15 +430,20 @@ export class LogFilterSession {
   }
 
   private buildAllRows(): SerializedLogEntry[] {
-    return this.entries.map((e) => ({
-      id: e.id,
-      fullText: e.fullText,
-      lineNumber: e.lineNumber,
-    }));
+    return this.entries.map((e) => {
+      const sourceUri = e.sourceUri ?? this.primaryUriString();
+      return {
+        id: e.id,
+        fullText: e.fullText,
+        lineNumber: e.lineNumber,
+        sourceUri,
+        fileName: shortFileName(sourceUri),
+      };
+    });
   }
 
   private postUpdate(rows?: SerializedLogEntry[]): void {
-    const fileName = this.uri.path.split('/').pop() ?? this.uri.fsPath;
+    const fileName = shortFileName(this.primaryUriString());
     const tags =
       this.cachedTags.length > 0
         ? this.cachedTags
@@ -328,6 +470,7 @@ export class LogFilterSession {
       filteredIds: scanning ? [] : this.filteredIds,
       stats: { total, matched },
       fileName,
+      selectedFileCount: this.selectedUris.length,
       format: this.parseResult?.format ?? (scanning ? 'scanning' : 'unknown'),
       warnings: this.warnings,
       parseState: this.parseState,
@@ -339,13 +482,14 @@ export class LogFilterSession {
     });
   }
 
-  private async goToSource(line: number): Promise<void> {
+  private async goToSource(line: number, sourceUri?: string): Promise<void> {
+    const targetUri = sourceUri ? vscode.Uri.parse(sourceUri) : this.uri;
     try {
-      await goToSourceLine(this.uri, line, this.sourceViewColumn);
+      await goToSourceLine(targetUri, line, this.sourceViewColumn);
     } catch (err) {
-      logError(`Go to source failed for ${this.uri.fsPath}:${line + 1}`, err);
+      logError(`Go to source failed for ${targetUri.fsPath}:${line + 1}`, err);
       void vscode.window.showWarningMessage(
-        `Could not jump to line ${line + 1} in ${this.uri.path.split('/').pop() ?? 'log file'}.`,
+        `Could not jump to line ${line + 1} in ${shortFileName(targetUri.toString())}.`,
       );
     }
   }
@@ -518,9 +662,37 @@ export class LogFilterSessionManager {
     return undefined;
   }
 
+  /** Close panel whose primary source is this URI (e.g. explicit close command). */
   closeForUri(uri: vscode.Uri): void {
     const session = this.sessions.get(uri.toString());
     session?.panel.dispose();
+  }
+
+  /**
+   * Text tab/document closed: dispose session if it was the primary source and no
+   * tabs remain; otherwise remove from other sessions' selections and refresh.
+   */
+  onTextTabClosed(uri: vscode.Uri): void {
+    const key = uri.toString();
+    const stillOpen = listOpenTextTabs().some((f) => f.uri === key);
+    if (stillOpen) {
+      return;
+    }
+
+    const primary = this.sessions.get(key);
+    if (primary) {
+      primary.panel.dispose();
+    }
+    for (const session of this.sessions.values()) {
+      session.removeSelectedUri(uri);
+    }
+  }
+
+  syncOpenFiles(): void {
+    const openFiles = listOpenTextTabs();
+    for (const session of this.sessions.values()) {
+      session.syncOpenFiles(openFiles);
+    }
   }
 
   revealForUri(uri: vscode.Uri): void {
@@ -528,7 +700,11 @@ export class LogFilterSessionManager {
   }
 
   onDocumentChanged(uri: vscode.Uri): void {
-    this.sessions.get(uri.toString())?.scheduleReparse();
+    for (const session of this.sessions.values()) {
+      if (session.includesUri(uri)) {
+        session.scheduleReparse();
+      }
+    }
   }
 
   private getActiveSession(): LogFilterSession | undefined {

@@ -16,6 +16,12 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
 </head>
 <body>
   <div id="toolbar">
+    <div id="files-dropdown">
+      <button id="files-btn" type="button" aria-haspopup="listbox" aria-expanded="false" title="Search files">
+        Files <span id="files-count">(1)</span>
+      </button>
+      <div id="files-menu" class="hidden" role="listbox" aria-label="Open text files"></div>
+    </div>
     <div id="query-wrap">
       <div id="query-editor">
         <div id="query-highlight" aria-hidden="true"></div>

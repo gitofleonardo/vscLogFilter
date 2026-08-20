@@ -36,7 +36,12 @@ export function isLogcatDocumentContent(text: string): boolean {
   return false;
 }
 
-function parseLine(acc: LogParseAccumulator, line: string, lineNumber: number): void {
+function parseLine(
+  acc: LogParseAccumulator,
+  line: string,
+  lineNumber: number,
+  sourceUri?: string,
+): void {
   const thread = THREADTIME_LINE.exec(line);
   if (thread) {
     acc.format = acc.format === 'time' ? 'mixed' : acc.format === 'unknown' ? 'threadtime' : acc.format;
@@ -51,6 +56,7 @@ function parseLine(acc: LogParseAccumulator, line: string, lineNumber: number): 
       rawLine: line,
       fullText: line,
       lineNumber,
+      sourceUri,
     });
     return;
   }
@@ -68,12 +74,16 @@ function parseLine(acc: LogParseAccumulator, line: string, lineNumber: number): 
       rawLine: line,
       fullText: line,
       lineNumber,
+      sourceUri,
     });
     return;
   }
 
   if (acc.rawEntries.length > 0) {
     const last = acc.rawEntries[acc.rawEntries.length - 1];
+    if (sourceUri && last.sourceUri && last.sourceUri !== sourceUri) {
+      return;
+    }
     last.message += '\n' + line;
     last.fullText += '\n' + line;
   }
@@ -83,9 +93,10 @@ export function parseLogLinesChunk(
   acc: LogParseAccumulator,
   lines: string[],
   lineOffset: number,
+  sourceUri?: string,
 ): void {
   for (let i = 0; i < lines.length; i++) {
-    parseLine(acc, lines[i], lineOffset + i);
+    parseLine(acc, lines[i], lineOffset + i, sourceUri);
   }
 }
 

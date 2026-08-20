@@ -74,7 +74,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     vscode.workspace.onDidCloseTextDocument((doc) => {
-      manager.closeForUri(doc.uri);
+      manager.onTextTabClosed(doc.uri);
     }),
 
     vscode.window.onDidChangeActiveTextEditor((editor) => {
@@ -88,20 +88,20 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
 
-    vscode.window.tabGroups.onDidChangeTabs(() => {
+    vscode.window.tabGroups.onDidChangeTabs((e) => {
       const tab = vscode.window.tabGroups.activeTab;
       if (tab?.input instanceof vscode.TabInputText) {
         syncActiveLogTab(tab.input.uri.toString());
       }
-    }),
 
-    vscode.window.tabGroups.onDidChangeTabs((e) => {
-      for (const tab of e.closed) {
-        const input = tab.input;
+      for (const closed of e.closed) {
+        const input = closed.input;
         if (input instanceof vscode.TabInputText) {
-          manager.closeForUri(input.uri);
+          manager.onTextTabClosed(input.uri);
         }
       }
+
+      manager.syncOpenFiles();
     }),
   );
 

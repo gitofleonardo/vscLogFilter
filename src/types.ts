@@ -11,6 +11,8 @@ export interface LogEntry {
   rawLine: string;
   fullText: string;
   lineNumber: number;
+  /** Source document URI when indexing multiple files in one panel. */
+  sourceUri?: string;
 }
 
 export interface ParseResult {
@@ -34,4 +36,6 @@ export interface SerializedLogEntry {
   id: number;
   fullText: string;
   lineNumber: number;
+  sourceUri?: string;
+  fileName?: string;
 }

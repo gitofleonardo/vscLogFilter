@@ -19,6 +19,21 @@ export interface IndexMeta {
   tags: string[];
 }
 
+export type IndexSource =
+  | {
+      kind: 'file';
+      sourceUri: string;
+      filePath: string;
+      fileSize: number;
+      fileMtimeMs: number;
+    }
+  | {
+      kind: 'document';
+      sourceUri: string;
+      doc: vscode.TextDocument;
+      fileMtimeMs: number;
+    };
+
 export class WorkerParser {
   private worker?: Worker;
   private parseVersion = 0;
@@ -74,38 +89,22 @@ export class WorkerParser {
     fileMtimeMs: number,
     version: number,
     onScan?: (progress: ScanProgress) => void,
+    sourceUri?: string,
   ): Promise<IndexMeta> {
-    if (this.matchesCache(cacheKey)) {
-      return this.indexMeta!;
-    }
-    this.invalidate();
-    this.cacheKey = cacheKey;
-    const worker = this.ensureWorker();
-    this.parseVersion = version;
-
-    let latest: ScanProgress = { linesProcessed: 0, entryCount: 0 };
-    const reportScan = (patch: Partial<ScanProgress>) => {
-      latest = { ...latest, ...patch };
-      onScan?.(latest);
-    };
-
-    await this.runParse(
-      worker,
-      version,
-      (w, v) => w.postMessage({ type: 'init', fileMtimeMs, version: v }),
-      async (w, v, shouldContinue) => {
-        await forEachLineChunk(filePath, WORKER_CHUNK_LINES, {
+    return this.buildIndexFromSources(
+      cacheKey,
+      [
+        {
+          kind: 'file',
+          sourceUri: sourceUri ?? filePath,
+          filePath,
           fileSize,
-          shouldContinue,
-          onProgress: (percent) => reportScan({ percent }),
-          onChunk: (lines, lineOffset) =>
-            this.postChunk(w, v, lines, lineOffset, shouldContinue),
-        });
-      },
-      reportScan,
+          fileMtimeMs,
+        },
+      ],
+      version,
+      onScan,
     );
-
-    return this.indexMeta!;
   }
 
   async buildIndexFromDocument(
@@ -115,6 +114,30 @@ export class WorkerParser {
     version: number,
     onScan?: (progress: ScanProgress) => void,
   ): Promise<IndexMeta> {
+    return this.buildIndexFromSources(
+      cacheKey,
+      [
+        {
+          kind: 'document',
+          sourceUri: doc.uri.toString(),
+          doc,
+          fileMtimeMs,
+        },
+      ],
+      version,
+      onScan,
+    );
+  }
+
+  async buildIndexFromSources(
+    cacheKey: string,
+    sources: IndexSource[],
+    version: number,
+    onScan?: (progress: ScanProgress) => void,
+  ): Promise<IndexMeta> {
+    if (sources.length === 0) {
+      throw new Error('No sources to index');
+    }
     if (this.matchesCache(cacheKey)) {
       return this.indexMeta!;
     }
@@ -123,34 +146,63 @@ export class WorkerParser {
     const worker = this.ensureWorker();
     this.parseVersion = version;
 
-    const totalLines = doc.lineCount;
-    let lineIndex = 0;
-
+    const fileMtimeMs = Math.max(...sources.map((s) => s.fileMtimeMs));
     let latest: ScanProgress = { linesProcessed: 0, entryCount: 0 };
     const reportScan = (patch: Partial<ScanProgress>) => {
       latest = { ...latest, ...patch };
       onScan?.(latest);
     };
 
+    const sourceCount = sources.length;
+
     await this.runParse(
       worker,
       version,
       (w, v) => w.postMessage({ type: 'init', fileMtimeMs, version: v }),
       async (w, v, shouldContinue) => {
-        while (lineIndex < totalLines) {
+        for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex++) {
+          const source = sources[sourceIndex];
           if (!shouldContinue()) {
             throw new Error('Parse cancelled');
           }
-          const end = Math.min(lineIndex + WORKER_CHUNK_LINES, totalLines);
-          const lines: string[] = [];
-          for (let i = lineIndex; i < end; i++) {
-            lines.push(doc.lineAt(i).text);
+          const basePercent = Math.round((sourceIndex / sourceCount) * 100);
+          const span = Math.round(100 / sourceCount);
+
+          if (source.kind === 'file') {
+            await forEachLineChunk(source.filePath, WORKER_CHUNK_LINES, {
+              fileSize: source.fileSize,
+              shouldContinue,
+              onProgress: (percent) => {
+                reportScan({
+                  percent: Math.min(99, basePercent + Math.round((percent / 100) * span)),
+                });
+              },
+              onChunk: (lines, lineOffset) =>
+                this.postChunk(w, v, lines, lineOffset, shouldContinue, source.sourceUri),
+            });
+          } else {
+            const totalLines = source.doc.lineCount;
+            let lineIndex = 0;
+            while (lineIndex < totalLines) {
+              if (!shouldContinue()) {
+                throw new Error('Parse cancelled');
+              }
+              const end = Math.min(lineIndex + WORKER_CHUNK_LINES, totalLines);
+              const lines: string[] = [];
+              for (let i = lineIndex; i < end; i++) {
+                lines.push(source.doc.lineAt(i).text);
+              }
+              await this.postChunk(w, v, lines, lineIndex, shouldContinue, source.sourceUri);
+              lineIndex = end;
+              reportScan({
+                percent: Math.min(
+                  99,
+                  basePercent +
+                    Math.round((lineIndex / Math.max(1, totalLines)) * span),
+                ),
+              });
+            }
           }
-          await this.postChunk(w, v, lines, lineIndex, shouldContinue);
-          lineIndex = end;
-          reportScan({
-            percent: totalLines > 0 ? Math.min(99, Math.round((lineIndex / totalLines) * 100)) : 0,
-          });
         }
       },
       reportScan,
@@ -251,6 +303,7 @@ export class WorkerParser {
     lines: string[],
     lineOffset: number,
     shouldContinue: () => boolean,
+    sourceUri?: string,
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       if (!shouldContinue()) {
@@ -264,7 +317,7 @@ export class WorkerParser {
         }
       };
       worker.on('message', onMessage);
-      worker.postMessage({ type: 'chunk', lines, lineOffset, version });
+      worker.postMessage({ type: 'chunk', lines, lineOffset, version, sourceUri });
     });
   }
 

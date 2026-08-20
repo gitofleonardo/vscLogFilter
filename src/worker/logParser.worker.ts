@@ -69,6 +69,7 @@ parentPort?.on('message', (msg: {
   fileMtimeMs?: number;
   version?: number;
   query?: string;
+  sourceUri?: string;
 }) => {
   try {
     switch (msg.type) {
@@ -86,7 +87,12 @@ parentPort?.on('message', (msg: {
           parentPort?.postMessage({ type: 'chunkAck', stale: true });
           return;
         }
-        parseLogLinesChunk(accumulating.acc, msg.lines ?? [], msg.lineOffset ?? 0);
+        parseLogLinesChunk(
+          accumulating.acc,
+          msg.lines ?? [],
+          msg.lineOffset ?? 0,
+          msg.sourceUri,
+        );
         const linesProcessed = (msg.lineOffset ?? 0) + (msg.lines?.length ?? 0);
         parentPort?.postMessage({
           type: 'progress',
