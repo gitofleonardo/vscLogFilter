@@ -22,7 +22,7 @@
 
 ## 示例
 
-对大型离线 logcat 导出文件，组合字段键、文本 OR 与时间下界进行过滤：
+对大型离线 logcat 导出文件，组合字段键、显式 OR 与时间下界进行过滤：
 
 ```
 tag:AlarmManager pid:2917 tencent | device after:10:50:00
@@ -30,7 +30,7 @@ tag:AlarmManager pid:2917 tencent | device after:10:50:00
 
 ![Log Filter 示例：源编辑器与过滤结果并排显示](docs/example.png)
 
-该查询将 `tag:` / `pid:` / `after:` 作为全局 AND 条件，`|` 仅用于文本 OR（`tencent` 或 `device`），匹配行会高亮关键词。
+空格分隔的条件按 AND 组合（同一键隐式 OR）。显式 `|` / `&` 为布尔 OR / AND（标准优先级），字段键也可参与 OR（例如 `tag:SurfaceControl | transition`）。匹配行会高亮关键词。
 
 ## 查询语法
 
@@ -46,9 +46,10 @@ tag:AlarmManager pid:2917 tencent | device after:10:50:00
 | `age:5m` | 距最后一条日志时间戳 5 分钟内 |
 | `is:crash` / `is:stacktrace` / `is:firebase` | 预设过滤器 |
 | `after:11:02:00` / `before:11:05:00` | 时间上下界 |
-| `foo bar` | 在完整条目上短语搜索 |
+| `foo bar` | 完整条目须同时包含两个词（AND） |
 | `tag:a tag:b` | 同一键隐式 OR |
 | `tag:a -tag:b pid:1` | 含否定时为 AND |
+| `tag:foo \| bar` | 显式 OR（字段与文本均可） |
 | `(tag:a \| tag:b) & level:E` | 显式分组 |
 
 **不支持：** `package:`（请用 `pid:`）、`tag~:` 正则（会显示警告）。
@@ -72,6 +73,8 @@ npm test
 ```
 
 在 VS Code 中按 F5 启动 Extension Development Host。
+
+**要求：** 功能或行为变更后，须在 `test/` 补充/更新测试，并在收工前执行全量 `npm test`。详见 [docs/DEVELOPMENT_CN.md](docs/DEVELOPMENT_CN.md)（[English](docs/DEVELOPMENT.md)）。
 
 ## 参考
 

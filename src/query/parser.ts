@@ -10,12 +10,12 @@ export function parseQuery(input: string): ParseQueryResult {
 
   try {
     const tokens = tokenize(trimmed);
-    const { node, index } = parseAsLogcatTopLevel(tokens, 0, warnings);
+    const { node, index } = parseTopLevel(tokens, 0, warnings);
     const end = skipTrailingOperators(tokens, index);
     if (end !== tokens.length - 1) {
       throw new Error('Unexpected tokens');
     }
-    const top = normalizeTopLevel(node, warnings);
+    const top = normalizeTopLevel(node);
     return { ast: top, warnings };
   } catch {
     return {
@@ -34,106 +34,40 @@ function skipTrailingOperators(tokens: Token[], start: number): number {
   return index;
 }
 
-function parseAsLogcatTopLevel(
+/** AS-style: root is a list of space-separated expressions; combine with same-key OR then AND. */
+function parseTopLevel(
   tokens: Token[],
   start: number,
   warnings: string[],
 ): { node: FilterNode; index: number } {
-  const globalKeys: KeyFilterNode[] = [];
-  const textSegments: FilterNode[] = [];
-  let segmentParts: FilterNode[] = [];
-
+  const exprs: FilterNode[] = [];
   let index = start;
+
   while (index < tokens.length) {
     const token = tokens[index];
     if (!token || token.type === 'EOF' || token.type === 'RPAREN') {
       break;
     }
 
-    if (token.type === 'OR') {
-      if (segmentParts.length > 0) {
-        textSegments.push(combineNodes('and', segmentParts)!);
-        segmentParts = [];
-      }
+    if (token.type === 'OR' || token.type === 'AND') {
       index++;
       continue;
     }
 
-    if (token.type === 'AND') {
-      index++;
-      continue;
+    if (!isPrimaryStart(token)) {
+      break;
     }
 
-    if (token.type === 'LPAREN') {
-      const inner = parseOrExpr(tokens, index + 1, warnings);
-      if (tokens[inner.index]?.type !== 'RPAREN') {
-        throw new Error('Missing )');
-      }
-      segmentParts.push(inner.node);
-      index = inner.index + 1;
-      continue;
-    }
-
-    if (token.type === 'KEY') {
-      globalKeys.push(keyTokenToNode(token, warnings));
-      index++;
-      continue;
-    }
-
-    if (token.type === 'WORD') {
-      segmentParts.push({ kind: 'phrase', text: token.value });
-      index++;
-      continue;
-    }
-
-    throw new Error(`Unexpected token ${token.type}`);
+    const next = parseOrExpr(tokens, index, warnings);
+    exprs.push(next.node);
+    index = next.index;
   }
 
-  if (segmentParts.length > 0) {
-    textSegments.push(combineNodes('and', segmentParts)!);
-  }
-
-  const parts: FilterNode[] = [];
-
-  if (globalKeys.length > 0) {
-    parts.push(...groupGlobalKeys(globalKeys));
-  }
-
-  if (textSegments.length === 1) {
-    parts.push(textSegments[0]);
-  } else if (textSegments.length > 1) {
-    parts.push(combineNodes('or', textSegments)!);
-  }
-
-  if (parts.length === 0) {
+  if (exprs.length === 0) {
     throw new Error('Empty query');
   }
 
-  return { node: combineNodes('and', parts)!, index };
-}
-
-function groupGlobalKeys(keys: KeyFilterNode[]): FilterNode[] {
-  const buckets = new Map<string, KeyFilterNode[]>();
-  let uniqueIdx = 0;
-  for (const key of keys) {
-    const bucketKey = groupKeyFor(key, uniqueIdx++);
-    if (!buckets.has(bucketKey)) {
-      buckets.set(bucketKey, []);
-    }
-    buckets.get(bucketKey)!.push(key);
-  }
-
-  const groups: FilterNode[] = [];
-  for (const [, nodes] of buckets) {
-    if (nodes.length === 1) {
-      groups.push(nodes[0]);
-    } else if (nodes.every((n) => !n.negated && sameOrGroupField(n.field))) {
-      groups.push({ kind: 'or', children: nodes });
-    } else {
-      groups.push(combineNodes('and', nodes)!);
-    }
-  }
-  return groups;
+  return { node: combineNodes('and', exprs)!, index };
 }
 
 function combineNodes(kind: 'and' | 'or', nodes: FilterNode[]): FilterNode | null {
@@ -170,24 +104,16 @@ function parseOrExpr(tokens: Token[], start: number, warnings: string[]): { node
   return { node: { kind: 'or', children: parts }, index };
 }
 
+/** Explicit `&` only — juxtaposition is a new top-level expression (AS-compatible). */
 function parseAndExpr(tokens: Token[], start: number, warnings: string[]): { node: FilterNode; index: number } {
   let { node, index } = parsePrimary(tokens, start, warnings);
   const parts: FilterNode[] = [node];
-  while (
-    tokens[index]?.type === 'AND' ||
-    (tokens[index]?.type !== 'OR' &&
-      tokens[index]?.type !== 'RPAREN' &&
-      tokens[index]?.type !== 'EOF' &&
-      tokens[index]?.type !== undefined &&
-      isPrimaryStart(tokens[index]))
-  ) {
-    if (tokens[index]?.type === 'AND') {
-      const nextToken = tokens[index + 1];
-      if (!nextToken || nextToken.type === 'EOF' || !isPrimaryStart(nextToken)) {
-        break;
-      }
-      index++;
+  while (tokens[index]?.type === 'AND') {
+    const nextToken = tokens[index + 1];
+    if (!nextToken || nextToken.type === 'EOF' || !isPrimaryStart(nextToken)) {
+      break;
     }
+    index++;
     const next = parsePrimary(tokens, index, warnings);
     parts.push(next.node);
     index = next.index;
@@ -255,7 +181,7 @@ function keyTokenToNode(t: Token, warnings: string[]): KeyFilterNode {
   };
 }
 
-function normalizeTopLevel(node: FilterNode, _warnings: string[]): FilterNode {
+function normalizeTopLevel(node: FilterNode): FilterNode {
   const flat = flattenTopLevelNodes(node);
   if (flat.length <= 1) {
     return node;
@@ -319,10 +245,10 @@ function sameOrGroupField(field: FieldKey): boolean {
 }
 
 function groupKeyFor(n: KeyFilterNode, idx: number): string {
-  if (n.negated || n.mode === 'exact') {
+  if (n.negated) {
     return `u${idx}`;
   }
-  if (n.field === 'is' || n.field === 'name') {
+  if (n.field === 'is' || n.field === 'name' || n.field === 'after' || n.field === 'before') {
     return `u${idx}`;
   }
   if (sameOrGroupField(n.field)) {
