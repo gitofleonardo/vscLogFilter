@@ -19,6 +19,10 @@ export interface ParseResult {
   entries: LogEntry[];
   /** Total log entries when `entries` is omitted or filtered subset. */
   totalEntries?: number;
+  /** True match count (same as matched index list length after filter). */
+  matchedCount?: number;
+  /** Compact rows from filter (preferred over full LogEntry clones). */
+  rows?: SerializedLogEntry[];
   fileMaxTime?: number;
   format: 'threadtime' | 'time' | 'mixed' | 'unknown';
   tags?: string[];

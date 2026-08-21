@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { Worker } from 'worker_threads';
 import * as path from 'path';
-import type { ParseResult } from '../types';
+import type { ParseResult, SerializedLogEntry } from '../types';
 import { WORKER_CHUNK_LINES } from '../constants';
 import { forEachLineChunk } from '../log/fileLineStream';
 import { logError } from '../logChannel';
@@ -17,6 +17,13 @@ export interface IndexMeta {
   fileMaxTime?: number;
   format: ParseResult['format'];
   tags: string[];
+}
+
+export interface FilterResultMeta {
+  totalEntries: number;
+  matchedCount: number;
+  maxLineNumber: number;
+  filterWarnings?: string[];
 }
 
 export type IndexSource =
@@ -42,10 +49,12 @@ export class WorkerParser {
   private pendingFilterJob?: {
     query: string;
     generation: number;
-    resolve: (result: ParseResult) => void;
+    resolve: (result: FilterResultMeta) => void;
     reject: (err: Error) => void;
   };
   private filterDraining = false;
+  private rowRequestId = 0;
+  private findRequestId = 0;
 
   constructor(private extensionPath: string) {}
 
@@ -211,7 +220,7 @@ export class WorkerParser {
     return this.indexMeta!;
   }
 
-  filterQuery(query: string, generation: number): Promise<ParseResult> {
+  filterQuery(query: string, generation: number): Promise<FilterResultMeta> {
     if (!this.worker || !this.indexMeta) {
       return Promise.reject(new Error('Log index not ready'));
     }
@@ -222,6 +231,65 @@ export class WorkerParser {
       }
       this.pendingFilterJob = { query, generation, resolve, reject };
       void this.drainFilterQueue();
+    });
+  }
+
+  getRows(start: number, end: number): Promise<SerializedLogEntry[]> {
+    if (!this.worker || !this.indexMeta) {
+      return Promise.reject(new Error('Log index not ready'));
+    }
+    const worker = this.worker;
+    const requestId = ++this.rowRequestId;
+    return new Promise((resolve, reject) => {
+      const onMessage = (msg: {
+        type: string;
+        requestId?: number;
+        rows?: SerializedLogEntry[];
+        error?: string;
+      }) => {
+        if (msg.type === 'rows' && msg.requestId === requestId) {
+          worker.off('message', onMessage);
+          resolve(msg.rows ?? []);
+          return;
+        }
+        if (msg.type === 'error' && msg.requestId === requestId) {
+          worker.off('message', onMessage);
+          reject(new Error(msg.error ?? 'getRows error'));
+        }
+      };
+      worker.on('message', onMessage);
+      worker.postMessage({ type: 'getRows', start, end, requestId });
+    });
+  }
+
+  findInResults(
+    needle: string,
+  ): Promise<{ matches: Array<{ rowIndex: number; start: number; end: number }>; capped: boolean }> {
+    if (!this.worker || !this.indexMeta) {
+      return Promise.reject(new Error('Log index not ready'));
+    }
+    const worker = this.worker;
+    const requestId = ++this.findRequestId;
+    return new Promise((resolve, reject) => {
+      const onMessage = (msg: {
+        type: string;
+        requestId?: number;
+        matches?: Array<{ rowIndex: number; start: number; end: number }>;
+        capped?: boolean;
+        error?: string;
+      }) => {
+        if (msg.type === 'findMatches' && msg.requestId === requestId) {
+          worker.off('message', onMessage);
+          resolve({ matches: msg.matches ?? [], capped: Boolean(msg.capped) });
+          return;
+        }
+        if (msg.type === 'error' && msg.requestId === requestId) {
+          worker.off('message', onMessage);
+          reject(new Error(msg.error ?? 'findInResults error'));
+        }
+      };
+      worker.on('message', onMessage);
+      worker.postMessage({ type: 'findInResults', needle, requestId });
     });
   }
 
@@ -265,12 +333,12 @@ export class WorkerParser {
     }
   }
 
-  private executeFilter(query: string, generation: number): Promise<ParseResult> {
+  private executeFilter(query: string, generation: number): Promise<FilterResultMeta> {
     const worker = this.worker!;
     return new Promise((resolve, reject) => {
       const onMessage = (msg: {
         type: string;
-        result?: ParseResult;
+        result?: FilterResultMeta;
         version?: number;
         error?: string;
       }) => {

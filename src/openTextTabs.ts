@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { shortFileNameFromFsPath } from './uriUtils';
 
 export interface OpenTextTabInfo {
   uri: string;
@@ -19,7 +20,7 @@ export function listOpenTextTabs(): OpenTextTabInfo[] {
         continue;
       }
       seen.add(uri);
-      const fileName = tab.input.uri.path.split('/').pop() ?? tab.input.uri.fsPath;
+      const fileName = shortFileNameFromFsPath(tab.input.uri.fsPath);
       result.push({ uri, fileName });
     }
   }

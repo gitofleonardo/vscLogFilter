@@ -28,6 +28,17 @@
   const ROW_HEIGHT = 19;
   const BUFFER = 40;
 
+  function decodeUriBasename(uri) {
+    const withoutQuery = String(uri || '').split(/[?#]/, 1)[0];
+    const slash = Math.max(withoutQuery.lastIndexOf('/'), withoutQuery.lastIndexOf('\\'));
+    const raw = slash >= 0 ? withoutQuery.slice(slash + 1) : withoutQuery;
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  }
+
   let prefixOffsets = [0];
   let lastScrollTop = -1;
   let lastRenderedStart = -1;
@@ -57,7 +68,7 @@
     { key: '|', desc: 'Explicit OR' },
   ];
 
-  let filteredIds = [];
+  let matchCount = 0;
   let rowCache = new Map();
   let knownTags = [];
   let highlightTerms = [];
@@ -75,6 +86,11 @@
   let openFiles = [];
   let selectedFileCount = 1;
   let filesMenuOpen = false;
+  let rowRequestId = 0;
+  let pendingRowRequest = null;
+  let findRequestId = 0;
+  let filterEpoch = 0;
+  let pendingGoToIndex = -1;
 
   function formatCount(n) {
     if (n >= 1_000_000) {
@@ -175,7 +191,7 @@
     if (e.key === 'Enter') {
       goToSelected();
     } else if (e.key === 'ArrowDown') {
-      selectIndex(Math.min(selectedIndex + 1, filteredIds.length - 1));
+      selectIndex(Math.min(selectedIndex + 1, matchCount - 1));
       e.preventDefault();
     } else if (e.key === 'ArrowUp') {
       selectIndex(Math.max(selectedIndex - 1, 0));
@@ -187,6 +203,10 @@
     const msg = event.data;
     if (msg.type === 'update') {
       handleUpdate(msg);
+    } else if (msg.type === 'rows') {
+      handleRows(msg);
+    } else if (msg.type === 'findMatches') {
+      handleFindMatches(msg);
     } else if (msg.type === 'filesState') {
       handleFilesState(msg);
     } else if (msg.type === 'showFind') {
@@ -215,6 +235,14 @@
     selectedFileCount = selectedUris.length || 1;
     filesCountEl.textContent = `(${selectedFileCount})`;
     renderFilesMenu();
+    const prev = vscode.getState() || {};
+    if (prev.sourceUri || primaryUri) {
+      vscode.setState({
+        ...prev,
+        sourceUri: prev.sourceUri || primaryUri,
+        selectedUris,
+      });
+    }
   }
 
   function renderFilesMenu() {
@@ -227,7 +255,7 @@
     if (primaryUri) {
       const primary = openFiles.find((f) => f.uri === primaryUri) || {
         uri: primaryUri,
-        fileName: primaryUri.split('/').pop() || primaryUri,
+        fileName: decodeUriBasename(primaryUri),
       };
       ordered.push(primary);
       seen.add(primaryUri);
@@ -430,10 +458,13 @@
     if (!msg?.sourceUri) {
       return;
     }
+    const prev = vscode.getState() || {};
     vscode.setState({
+      ...prev,
       sourceUri: msg.sourceUri,
       sourceViewColumn: msg.sourceViewColumn,
       query: msg.query ?? queryEl.value,
+      selectedUris: msg.selectedUris ?? prev.selectedUris,
     });
   }
 
@@ -442,35 +473,26 @@
       queryEl.value = msg.query;
     }
 
-    const filteredKey = `${msg.query ?? ''}|${(msg.filteredIds || []).length}|${msg.filteredIds?.[0] ?? ''}|${msg.filteredIds?.[msg.filteredIds.length - 1] ?? ''}`;
+    const nextMatchCount = msg.matchCount ?? msg.stats?.matched ?? 0;
+    const filteredKey = `${msg.query ?? ''}|${nextMatchCount}|${msg.parseState ?? ''}`;
     const filterChanged = filteredKey !== lastFilteredKey;
     if (filterChanged) {
       lastFilteredKey = filteredKey;
       lastScrollTop = -1;
       lastRenderedStart = -1;
       lastRenderedEnd = -1;
-    }
-
-    filteredIds = msg.filteredIds || [];
-
-    if (msg.rows) {
+      filterEpoch++;
       rowCache.clear();
-      for (const row of msg.rows) {
-        rowCache.set(row.id, row);
-      }
-      if (filterChanged) {
-        listEl.scrollTop = 0;
-        listEl.scrollLeft = 0;
-      }
-    } else if (filterChanged) {
-      rowCache.clear();
+      pendingRowRequest = null;
       listEl.scrollTop = 0;
       listEl.scrollLeft = 0;
     }
+
+    matchCount = nextMatchCount;
     knownTags = msg.tags || [];
     highlightTerms = msg.highlightTerms || [];
     maxLineNumber = msg.maxLineNumber || 1;
-    selectedIndex = filteredIds.length > 0 ? 0 : -1;
+    selectedIndex = matchCount > 0 ? 0 : -1;
     updateQuerySyntaxHighlight();
 
     const matched = msg.stats?.matched ?? 0;
@@ -479,7 +501,8 @@
     statsEl.textContent = queryEmpty ? `— / ${total}` : `${matched} / ${total}`;
 
     const parsing = msg.parseState === 'parsing';
-    const showEmpty = queryEmpty && !parsing;
+    const filtering = msg.parseState === 'filtering';
+    const showEmpty = queryEmpty && !parsing && !filtering;
     emptyStateEl.classList.toggle('hidden', !showEmpty);
     scrollContentEl.classList.toggle('hidden', showEmpty);
 
@@ -495,24 +518,30 @@
       warningsEl.textContent = '';
     }
 
-    if (msg.parseState === 'parsing') {
+    if (msg.parseState === 'parsing' || filtering) {
       progressEl.classList.remove('hidden');
       const scan = msg.scanStats;
       const percent = scan?.percent;
-      if (typeof percent === 'number' && percent >= 0) {
+      if (msg.parseState === 'parsing' && (typeof percent !== 'number' || percent <= 0)) {
+        progressFillEl.style.width = '0%';
+      }
+      if (!filtering && typeof percent === 'number' && percent >= 0) {
         progressEl.classList.remove('indeterminate');
         progressFillEl.style.width = `${Math.min(100, percent)}%`;
-      } else {
+      } else if (filtering) {
         progressEl.classList.add('indeterminate');
         progressFillEl.style.removeProperty('width');
+      } else {
+        progressEl.classList.add('indeterminate');
       }
-      progressTextEl.textContent = scan
-        ? formatScanStatus(scan)
-        : 'Scanning…';
+      progressTextEl.textContent = filtering
+        ? 'Filtering…'
+        : scan
+          ? formatScanStatus(scan)
+          : 'Scanning…';
     } else {
       progressEl.classList.add('hidden');
       progressEl.classList.remove('indeterminate');
-      progressFillEl.style.width = '0%';
     }
 
     updateGutterWidth();
@@ -526,8 +555,96 @@
     persistPanelState(msg);
     if (findActive && findQuery) {
       rebuildFindMatches();
-      scrollToCurrentMatch();
     }
+  }
+
+  function handleRows(msg) {
+    // Prefetch from extension uses requestId -1; accept it without a pending request.
+    const isPrefetch = msg && msg.requestId === -1;
+    if (!isPrefetch && (!msg || msg.requestId !== pendingRowRequest?.id)) {
+      return;
+    }
+    if (!isPrefetch && pendingRowRequest && pendingRowRequest.epoch !== filterEpoch) {
+      pendingRowRequest = null;
+      return;
+    }
+    const req = isPrefetch
+      ? { start: msg.start ?? 0, end: msg.end ?? 0 }
+      : pendingRowRequest;
+    if (!isPrefetch) {
+      pendingRowRequest = null;
+    }
+    let heightChanged = false;
+    for (const row of msg.rows || []) {
+      const prev = rowCache.get(row.id);
+      if (!prev || rowLineCount(prev) !== rowLineCount(row)) {
+        heightChanged = true;
+      }
+      rowCache.set(row.id, row);
+    }
+    trimRowCache(req.start, msg.end ?? req.end);
+    if (heightChanged) {
+      rebuildLayout();
+    }
+    renderVisibleRows(true);
+    if (pendingGoToIndex >= 0) {
+      const row = rowCache.get(pendingGoToIndex);
+      if (row) {
+        const index = pendingGoToIndex;
+        pendingGoToIndex = -1;
+        vscode.postMessage({
+          type: 'goToSource',
+          line: row.lineNumber,
+          sourceUri: row.sourceUri || primaryUri,
+        });
+        selectIndex(index);
+      }
+    }
+  }
+
+  const ROW_CACHE_MAX = 2500;
+
+  function trimRowCache(keepStart, keepEnd) {
+    if (rowCache.size <= ROW_CACHE_MAX) {
+      return;
+    }
+    const pad = BUFFER * 4;
+    const lo = Math.max(0, keepStart - pad);
+    const hi = Math.min(matchCount, keepEnd + pad);
+    for (const id of rowCache.keys()) {
+      if (id < lo || id >= hi) {
+        rowCache.delete(id);
+      }
+    }
+  }
+
+  function ensureRows(start, end) {
+    const lo = Math.max(0, start);
+    const hi = Math.min(matchCount, end);
+    if (lo >= hi) {
+      return;
+    }
+    let missing = false;
+    for (let i = lo; i < hi; i++) {
+      if (!rowCache.has(i)) {
+        missing = true;
+        break;
+      }
+    }
+    if (!missing) {
+      return;
+    }
+    if (
+      pendingRowRequest &&
+      pendingRowRequest.start <= lo &&
+      pendingRowRequest.end >= hi &&
+      pendingRowRequest.epoch === filterEpoch
+    ) {
+      return;
+    }
+    const requestId = ++rowRequestId;
+    pendingRowRequest = { id: requestId, start: lo, end: hi, epoch: filterEpoch };
+    vscode.postMessage({ type: 'requestRows', start: lo, end: hi, requestId });
   }
 
   function showFindBar() {
@@ -557,29 +674,26 @@
       updateFindStatus();
       return;
     }
+    const requestId = ++findRequestId;
+    findStatusEl.textContent = 'Searching…';
+    vscode.postMessage({ type: 'findInResults', needle: findQuery, requestId });
+  }
 
-    const needle = findQuery.toLowerCase();
-    for (let rowIndex = 0; rowIndex < filteredIds.length; rowIndex++) {
-      const row = rowCache.get(filteredIds[rowIndex]);
-      const text = row?.fullText || '';
-      const hay = text.toLowerCase();
-      let idx = 0;
-      while (idx < hay.length) {
-        const found = hay.indexOf(needle, idx);
-        if (found === -1) {
-          break;
-        }
-        findMatches.push({ rowIndex, start: found, end: found + needle.length });
-        idx = found + 1;
-      }
+  function handleFindMatches(msg) {
+    if (!msg || msg.requestId !== findRequestId) {
+      return;
     }
-
+    findMatches = msg.matches || [];
     if (findMatches.length === 0) {
       currentMatchIndex = -1;
     } else if (currentMatchIndex < 0 || currentMatchIndex >= findMatches.length) {
       currentMatchIndex = 0;
     }
     updateFindStatus();
+    if (msg.capped && findMatches.length) {
+      findStatusEl.textContent = `${currentMatchIndex + 1} of ${findMatches.length}+`;
+    }
+    scrollToCurrentMatch();
   }
 
   function updateFindStatus() {
@@ -639,16 +753,15 @@
   }
 
   function rowHeightAt(index) {
-    const id = filteredIds[index];
-    return rowLineCount(rowCache.get(id)) * ROW_HEIGHT;
+    return rowLineCount(rowCache.get(index)) * ROW_HEIGHT;
   }
 
   function rebuildLayout() {
     prefixOffsets = [0];
-    for (let i = 0; i < filteredIds.length; i++) {
+    for (let i = 0; i < matchCount; i++) {
       prefixOffsets.push(prefixOffsets[i] + rowHeightAt(i));
     }
-    const total = prefixOffsets[filteredIds.length] || 0;
+    const total = prefixOffsets[matchCount] || 0;
     scrollContentEl.style.height = `${Math.max(total, listEl.clientHeight)}px`;
   }
 
@@ -659,11 +772,11 @@
   }
 
   function findRowAtOffset(offset) {
-    if (filteredIds.length === 0) {
+    if (matchCount === 0) {
       return 0;
     }
     let lo = 0;
-    let hi = filteredIds.length - 1;
+    let hi = matchCount - 1;
     while (lo < hi) {
       const mid = Math.ceil((lo + hi) / 2);
       if (prefixOffsets[mid] <= offset) {
@@ -685,16 +798,16 @@
     const start = Math.max(0, findRowAtOffset(scrollTop) - BUFFER);
     const viewEnd = scrollTop + listEl.clientHeight + BUFFER * ROW_HEIGHT;
     let end = start;
-    while (end < filteredIds.length && prefixOffsets[end] < viewEnd) {
+    while (end < matchCount && prefixOffsets[end] < viewEnd) {
       end++;
     }
-    end = Math.min(filteredIds.length, end + BUFFER);
+    end = Math.min(matchCount, end + BUFFER);
 
     renderVisibleRows(false, start, end);
   }
 
   function renderVisibleRows(force, rangeStart, rangeEnd) {
-    if (filteredIds.length === 0) {
+    if (matchCount === 0) {
       rowsEl.replaceChildren();
       return;
     }
@@ -706,11 +819,13 @@
     let end = rangeEnd ?? start;
 
     if (rangeEnd === undefined) {
-      while (end < filteredIds.length && prefixOffsets[end] < viewBottom + BUFFER * ROW_HEIGHT) {
+      while (end < matchCount && prefixOffsets[end] < viewBottom + BUFFER * ROW_HEIGHT) {
         end++;
       }
-      end = Math.min(filteredIds.length, end + 1);
+      end = Math.min(matchCount, end + 1);
     }
+
+    ensureRows(start, end);
 
     if (!force && start === lastRenderedStart && end === lastRenderedEnd && rowsEl.childElementCount > 0) {
       return;
@@ -720,34 +835,37 @@
 
     const fragment = document.createDocumentFragment();
     for (let i = start; i < end; i++) {
-      const id = filteredIds[i];
+      const id = i;
       const row = rowCache.get(id);
-      if (!row) {
-        continue;
-      }
 
       const el = document.createElement('div');
       el.className = 'row' + (i === selectedIndex ? ' selected' : '');
       el.dataset.index = String(i);
-      el.dataset.line = String(row.lineNumber);
+      el.dataset.line = row ? String(row.lineNumber) : '';
       el.style.height = `${rowHeightAt(i)}px`;
 
-      const lineNo = row.lineNumber + 1;
-      const text = row.fullText || '';
-      const showFilePrefix = selectedFileCount > 1 && row.fileName;
-      const prefixHtml = showFilePrefix
-        ? `<span class="file-prefix">${escapeHtml(row.fileName)}:</span>`
-        : '';
+      if (!row) {
+        el.innerHTML =
+          `<span class="gutter">…</span>` +
+          `<pre class="line-text"></pre>`;
+      } else {
+        const lineNo = row.lineNumber + 1;
+        const text = row.fullText || '';
+        const showFilePrefix = selectedFileCount > 1 && row.fileName;
+        const prefixHtml = showFilePrefix
+          ? `<span class="file-prefix">${escapeHtml(row.fileName)}:</span>`
+          : '';
 
-      el.innerHTML =
-        `<span class="gutter">${lineNo}</span>` +
-        `<pre class="line-text">${prefixHtml}${highlightRowText(text, i)}</pre>`;
+        el.innerHTML =
+          `<span class="gutter">${lineNo}</span>` +
+          `<pre class="line-text">${prefixHtml}${highlightRowText(text, i)}</pre>`;
 
-      el.addEventListener('click', () => selectIndex(i));
-      el.addEventListener('dblclick', () => {
-        selectIndex(i);
-        goToSelected();
-      });
+        el.addEventListener('click', () => selectIndex(i));
+        el.addEventListener('dblclick', () => {
+          selectIndex(i);
+          goToSelected();
+        });
+      }
 
       fragment.appendChild(el);
     }
@@ -762,8 +880,8 @@
   function selectIndex(index) {
     selectedIndex = index;
     renderSelection();
-    if (index >= 0 && filteredIds[index] !== undefined) {
-      vscode.postMessage({ type: 'selectEntry', id: filteredIds[index] });
+    if (index >= 0 && index < matchCount) {
+      vscode.postMessage({ type: 'selectEntry', id: index });
     }
   }
 
@@ -779,15 +897,17 @@
     if (selectedIndex < 0) {
       return;
     }
-    const id = filteredIds[selectedIndex];
-    const row = rowCache.get(id);
+    const row = rowCache.get(selectedIndex);
     if (row) {
       vscode.postMessage({
         type: 'goToSource',
         line: row.lineNumber,
         sourceUri: row.sourceUri || primaryUri,
       });
+      return;
     }
+    pendingGoToIndex = selectedIndex;
+    ensureRows(selectedIndex, selectedIndex + 1);
   }
 
   function escapeHtml(s) {

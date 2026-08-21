@@ -6,9 +6,10 @@ import {
   type LogParseAccumulator,
 } from '../log/parser';
 import { parseQuery } from '../query/parser';
-import { buildFilterContext, filterEntries } from '../query/evaluator';
-import type { ParseResult } from '../types';
-import { TAG_SUGGESTION_LIMIT } from '../constants';
+import { buildFilterContext, evaluateFilter } from '../query/evaluator';
+import type { LogEntry, ParseResult, SerializedLogEntry } from '../types';
+import { MAX_FIND_MATCHES, TAG_SUGGESTION_LIMIT } from '../constants';
+import { shortFileNameFromUriString } from '../uriUtils';
 
 interface ParseAccumulatorState {
   acc: LogParseAccumulator;
@@ -16,8 +17,20 @@ interface ParseAccumulatorState {
   version: number;
 }
 
+interface FilterMeta {
+  entries: [];
+  totalEntries: number;
+  matchedCount: number;
+  maxLineNumber: number;
+  fileMaxTime?: number;
+  format: ParseResult['format'];
+  filterWarnings?: string[];
+}
+
 let accumulating: ParseAccumulatorState | null = null;
 let parsedResult: ParseResult | null = null;
+/** Indices into parsedResult.entries for the latest filter. */
+let matchedIndices: number[] = [];
 
 function collectTags(entries: ParseResult['entries']): string[] {
   const tagSet = new Set<string>();
@@ -38,28 +51,98 @@ function buildMeta(full: ParseResult) {
   };
 }
 
-function filterParsed(query: string, full: ParseResult): ParseResult {
+function toSerializedRow(entry: LogEntry, displayId: number): SerializedLogEntry {
+  return {
+    id: displayId,
+    fullText: entry.fullText,
+    lineNumber: entry.lineNumber,
+    sourceUri: entry.sourceUri,
+    fileName: entry.sourceUri ? shortFileNameFromUriString(entry.sourceUri) : undefined,
+  };
+}
+
+/**
+ * Build matched index list only — no fullText payload on the filter path.
+ */
+function filterParsed(query: string, full: ParseResult): FilterMeta {
+  matchedIndices = [];
   if (!query.trim()) {
     return {
       entries: [],
       totalEntries: full.entries.length,
+      matchedCount: 0,
+      maxLineNumber: 1,
       fileMaxTime: full.fileMaxTime,
       format: full.format,
     };
   }
   const { ast, warnings } = parseQuery(query);
   const ctx = buildFilterContext(full.entries, full.fileMaxTime);
-  const matched = filterEntries(full.entries, ast, ctx).map((e, i) => ({
-    ...e,
-    id: i,
-  }));
+  let maxLineNumber = 1;
+
+  for (let i = 0; i < full.entries.length; i++) {
+    const entry = full.entries[i];
+    if (!evaluateFilter(ast, entry, ctx)) {
+      continue;
+    }
+    matchedIndices.push(i);
+    maxLineNumber = Math.max(maxLineNumber, entry.lineNumber + 1);
+  }
+
   return {
-    entries: matched,
+    entries: [],
     totalEntries: full.entries.length,
+    matchedCount: matchedIndices.length,
+    maxLineNumber,
     fileMaxTime: full.fileMaxTime,
     format: full.format,
     filterWarnings: warnings,
   };
+}
+
+function getRows(start: number, end: number): SerializedLogEntry[] {
+  if (!parsedResult) {
+    return [];
+  }
+  const lo = Math.max(0, Math.floor(start));
+  const hi = Math.min(matchedIndices.length, Math.floor(end));
+  const rows: SerializedLogEntry[] = [];
+  for (let displayId = lo; displayId < hi; displayId++) {
+    const entryIndex = matchedIndices[displayId];
+    const entry = parsedResult.entries[entryIndex];
+    if (entry) {
+      rows.push(toSerializedRow(entry, displayId));
+    }
+  }
+  return rows;
+}
+
+function findInMatches(needle: string): Array<{ rowIndex: number; start: number; end: number }> {
+  if (!parsedResult || !needle) {
+    return [];
+  }
+  const lower = needle.toLowerCase();
+  const matches: Array<{ rowIndex: number; start: number; end: number }> = [];
+  for (let rowIndex = 0; rowIndex < matchedIndices.length; rowIndex++) {
+    const entry = parsedResult.entries[matchedIndices[rowIndex]];
+    if (!entry) {
+      continue;
+    }
+    const hay = entry.fullText.toLowerCase();
+    let idx = 0;
+    while (idx < hay.length) {
+      const found = hay.indexOf(lower, idx);
+      if (found === -1) {
+        break;
+      }
+      matches.push({ rowIndex, start: found, end: found + needle.length });
+      if (matches.length >= MAX_FIND_MATCHES) {
+        return matches;
+      }
+      idx = found + 1;
+    }
+  }
+  return matches;
 }
 
 parentPort?.on('message', (msg: {
@@ -70,6 +153,10 @@ parentPort?.on('message', (msg: {
   version?: number;
   query?: string;
   sourceUri?: string;
+  start?: number;
+  end?: number;
+  requestId?: number;
+  needle?: string;
 }) => {
   try {
     switch (msg.type) {
@@ -80,6 +167,7 @@ parentPort?.on('message', (msg: {
           version: msg.version ?? 0,
         };
         parsedResult = null;
+        matchedIndices = [];
         parentPort?.postMessage({ type: 'ready', version: accumulating.version });
         break;
       case 'chunk': {
@@ -109,6 +197,7 @@ parentPort?.on('message', (msg: {
           return;
         }
         parsedResult = finalizeParseAccumulator(accumulating.acc, accumulating.fileMtimeMs);
+        matchedIndices = [];
         accumulating = null;
         const version = msg.version ?? 0;
         parentPort?.postMessage({
@@ -128,9 +217,33 @@ parentPort?.on('message', (msg: {
         parentPort?.postMessage({ type: 'filtered', result, version });
         break;
       }
+      case 'getRows': {
+        const requestId = msg.requestId ?? 0;
+        const rows = getRows(msg.start ?? 0, msg.end ?? 0);
+        parentPort?.postMessage({
+          type: 'rows',
+          requestId,
+          start: msg.start ?? 0,
+          end: msg.end ?? 0,
+          rows,
+        });
+        break;
+      }
+      case 'findInResults': {
+        const requestId = msg.requestId ?? 0;
+        const matches = findInMatches(msg.needle ?? '');
+        parentPort?.postMessage({
+          type: 'findMatches',
+          requestId,
+          matches,
+          capped: matches.length >= MAX_FIND_MATCHES,
+        });
+        break;
+      }
       case 'cancel':
         accumulating = null;
         parsedResult = null;
+        matchedIndices = [];
         parentPort?.postMessage({ type: 'cancelled', version: msg.version });
         break;
     }

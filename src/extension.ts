@@ -30,6 +30,11 @@ export function activate(context: vscode.ExtensionContext): void {
     getLogChannel(),
     vscode.window.registerWebviewPanelSerializer(LOG_FILTER_PANEL_VIEW_TYPE, {
       deserializeWebviewPanel: async (panel, state) => {
+        // Reset roots before revive — install path changes after extension update.
+        panel.webview.options = {
+          enableScripts: true,
+          localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')],
+        };
         await manager.revivePanel(panel, state as LogFilterPanelState | undefined);
       },
     }),
@@ -75,6 +80,18 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.workspace.onDidCloseTextDocument((doc) => {
       manager.onTextTabClosed(doc.uri);
+    }),
+
+    vscode.workspace.onDidDeleteFiles((e) => {
+      for (const uri of e.files) {
+        manager.onSourceGone(uri);
+      }
+    }),
+
+    vscode.workspace.onDidRenameFiles((e) => {
+      for (const file of e.files) {
+        manager.onSourceGone(file.oldUri);
+      }
     }),
 
     vscode.window.onDidChangeActiveTextEditor((editor) => {
