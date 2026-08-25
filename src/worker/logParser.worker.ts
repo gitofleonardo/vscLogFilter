@@ -8,8 +8,9 @@ import {
 import { parseQuery } from '../query/parser';
 import { buildFilterContext, evaluateFilter } from '../query/evaluator';
 import type { LogEntry, ParseResult, SerializedLogEntry } from '../types';
-import { MAX_FIND_MATCHES, TAG_SUGGESTION_LIMIT } from '../constants';
+import { MAX_FIND_MATCHES, TAG_SUGGESTION_LIMIT, FILTER_PROGRESS_CHECK_EVERY } from '../constants';
 import { shortFileNameFromUriString } from '../uriUtils';
+import { shouldEmitFilterProgress } from './filterProgress';
 
 interface ParseAccumulatorState {
   acc: LogParseAccumulator;
@@ -64,7 +65,7 @@ function toSerializedRow(entry: LogEntry, displayId: number): SerializedLogEntry
 /**
  * Build matched index list only — no fullText payload on the filter path.
  */
-function filterParsed(query: string, full: ParseResult): FilterMeta {
+function filterParsed(query: string, full: ParseResult, version: number): FilterMeta {
   matchedIndices = [];
   if (!query.trim()) {
     return {
@@ -79,14 +80,27 @@ function filterParsed(query: string, full: ParseResult): FilterMeta {
   const { ast, warnings } = parseQuery(query);
   const ctx = buildFilterContext(full.entries, full.fileMaxTime);
   let maxLineNumber = 1;
+  const total = full.entries.length;
+  let lastEmitMs = Date.now();
 
-  for (let i = 0; i < full.entries.length; i++) {
+  for (let i = 0; i < total; i++) {
     const entry = full.entries[i];
-    if (!evaluateFilter(ast, entry, ctx)) {
-      continue;
+    if (evaluateFilter(ast, entry, ctx)) {
+      matchedIndices.push(i);
+      maxLineNumber = Math.max(maxLineNumber, entry.lineNumber + 1);
     }
-    matchedIndices.push(i);
-    maxLineNumber = Math.max(maxLineNumber, entry.lineNumber + 1);
+    if ((i + 1) % FILTER_PROGRESS_CHECK_EVERY === 0) {
+      const now = Date.now();
+      if (shouldEmitFilterProgress(i, now, lastEmitMs)) {
+        lastEmitMs = now;
+        parentPort?.postMessage({
+          type: 'filterProgress',
+          version,
+          processed: i + 1,
+          total,
+        });
+      }
+    }
   }
 
   return {
@@ -213,7 +227,7 @@ parentPort?.on('message', (msg: {
           return;
         }
         const version = msg.version ?? 0;
-        const result = filterParsed(msg.query ?? '', parsedResult);
+        const result = filterParsed(msg.query ?? '', parsedResult, version);
         parentPort?.postMessage({ type: 'filtered', result, version });
         break;
       }

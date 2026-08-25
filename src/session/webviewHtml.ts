@@ -23,11 +23,23 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
       <div id="files-menu" class="hidden" role="listbox" aria-label="Open text files"></div>
     </div>
     <div id="query-wrap">
-      <div id="query-editor">
-        <div id="query-highlight" aria-hidden="true"></div>
-        <input id="query" type="text" placeholder="Filter query (AS Logcat syntax)..." spellcheck="false" autocomplete="off" />
+      <div id="query-field">
+        <div id="query-editor">
+          <div id="query-highlight" aria-hidden="true"></div>
+          <input id="query" type="text" placeholder="Filter query (AS Logcat syntax)..." spellcheck="false" autocomplete="off" />
+        </div>
+        <div id="suggestions" class="hidden"></div>
       </div>
-      <div id="suggestions" class="hidden"></div>
+      <div id="saved-dropdown">
+        <button id="saved-btn" type="button" aria-haspopup="true" aria-expanded="false" title="Saved filter queries">
+          Saved
+        </button>
+        <div id="saved-menu" class="hidden">
+          <input id="saved-search" type="text" placeholder="Search saved queries…" spellcheck="false" autocomplete="off" aria-label="Search saved queries" />
+          <button id="saved-add" type="button" disabled>Save current query</button>
+          <div id="saved-list" role="listbox" aria-label="Saved filter queries"></div>
+        </div>
+      </div>
     </div>
     <span id="stats"></span>
   </div>
@@ -42,10 +54,15 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     <button id="find-next" type="button" title="Next match (F3)">↓</button>
     <button id="find-close" type="button" title="Close (Escape)">×</button>
   </div>
-  <div id="list" tabindex="0">
-    <div id="empty-state">Enter a filter query to show matching log lines</div>
-    <div id="scroll-content">
-      <div id="rows"></div>
+  <div id="results">
+    <div id="filter-progress" class="hidden" role="progressbar" aria-label="Filtering" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-hidden="true">
+      <div id="filter-progress-fill"></div>
+    </div>
+    <div id="list" tabindex="0">
+      <div id="empty-state">Enter a filter query to show matching log lines</div>
+      <div id="scroll-content">
+        <div id="rows"></div>
+      </div>
     </div>
   </div>
   <div id="statusbar">

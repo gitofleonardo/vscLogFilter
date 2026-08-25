@@ -49,6 +49,7 @@ export class WorkerParser {
   private pendingFilterJob?: {
     query: string;
     generation: number;
+    onProgress?: (processed: number, total: number) => void;
     resolve: (result: FilterResultMeta) => void;
     reject: (err: Error) => void;
   };
@@ -220,7 +221,11 @@ export class WorkerParser {
     return this.indexMeta!;
   }
 
-  filterQuery(query: string, generation: number): Promise<FilterResultMeta> {
+  filterQuery(
+    query: string,
+    generation: number,
+    onProgress?: (processed: number, total: number) => void,
+  ): Promise<FilterResultMeta> {
     if (!this.worker || !this.indexMeta) {
       return Promise.reject(new Error('Log index not ready'));
     }
@@ -229,7 +234,7 @@ export class WorkerParser {
       if (this.pendingFilterJob) {
         this.pendingFilterJob.reject(new Error('Filter superseded'));
       }
-      this.pendingFilterJob = { query, generation, resolve, reject };
+      this.pendingFilterJob = { query, generation, onProgress, resolve, reject };
       void this.drainFilterQueue();
     });
   }
@@ -310,7 +315,7 @@ export class WorkerParser {
         const job = this.pendingFilterJob;
         this.pendingFilterJob = undefined;
         try {
-          const result = await this.executeFilter(job.query, job.generation);
+          const result = await this.executeFilter(job.query, job.generation, job.onProgress);
           if (this.pendingFilterJob) {
             job.reject(new Error('Filter superseded'));
             continue;
@@ -333,19 +338,30 @@ export class WorkerParser {
     }
   }
 
-  private executeFilter(query: string, generation: number): Promise<FilterResultMeta> {
+  private executeFilter(
+    query: string,
+    generation: number,
+    onProgress?: (processed: number, total: number) => void,
+  ): Promise<FilterResultMeta> {
     const worker = this.worker!;
     return new Promise((resolve, reject) => {
       const onMessage = (msg: {
         type: string;
         result?: FilterResultMeta;
         version?: number;
+        processed?: number;
+        total?: number;
         error?: string;
       }) => {
         if (msg.version !== generation) {
           return;
         }
         switch (msg.type) {
+          case 'filterProgress':
+            if (typeof msg.processed === 'number' && typeof msg.total === 'number') {
+              onProgress?.(msg.processed, msg.total);
+            }
+            break;
           case 'filtered':
             worker.off('message', onMessage);
             resolve(msg.result!);

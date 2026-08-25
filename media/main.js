@@ -14,6 +14,8 @@
   const progressEl = document.getElementById('progress');
   const progressFillEl = document.getElementById('progress-fill');
   const progressTextEl = document.getElementById('progress-text');
+  const filterProgressEl = document.getElementById('filter-progress');
+  const filterProgressFillEl = document.getElementById('filter-progress-fill');
   const findBarEl = document.getElementById('find-bar');
   const findInputEl = document.getElementById('find-input');
   const findStatusEl = document.getElementById('find-status');
@@ -24,6 +26,12 @@
   const filesCountEl = document.getElementById('files-count');
   const filesMenuEl = document.getElementById('files-menu');
   const filesDropdownEl = document.getElementById('files-dropdown');
+  const savedBtnEl = document.getElementById('saved-btn');
+  const savedMenuEl = document.getElementById('saved-menu');
+  const savedDropdownEl = document.getElementById('saved-dropdown');
+  const savedSearchEl = document.getElementById('saved-search');
+  const savedAddEl = document.getElementById('saved-add');
+  const savedListEl = document.getElementById('saved-list');
 
   const ROW_HEIGHT = 19;
   const BUFFER = 40;
@@ -86,6 +94,9 @@
   let openFiles = [];
   let selectedFileCount = 1;
   let filesMenuOpen = false;
+  let savedMenuOpen = false;
+  let savedQueries = [];
+  let savedActive = -1;
   let rowRequestId = 0;
   let pendingRowRequest = null;
   let findRequestId = 0;
@@ -111,13 +122,10 @@
     updateQuerySyntaxHighlight();
     updateSuggestions();
     updateEmptyStatePreview();
+    updateSavedAddEnabled();
     clearTimeout(queryDebounce);
     queryDebounce = setTimeout(() => {
-      vscode.postMessage({ type: 'queryChange', query: queryEl.value });
-      const state = vscode.getState();
-      if (state?.sourceUri) {
-        vscode.setState({ ...state, query: queryEl.value });
-      }
+      commitQuery();
     }, 150);
   });
 
@@ -209,6 +217,10 @@
       handleFindMatches(msg);
     } else if (msg.type === 'filesState') {
       handleFilesState(msg);
+    } else if (msg.type === 'savedQueriesState') {
+      handleSavedQueriesState(msg);
+    } else if (msg.type === 'filterProgress') {
+      setFilterProgressPercent(msg.percent);
     } else if (msg.type === 'showFind') {
       showFindBar();
     } else if (msg.type === 'findNext') {
@@ -222,6 +234,9 @@
     filesMenuOpen = open;
     filesMenuEl.classList.toggle('hidden', !open);
     filesBtnEl.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) {
+      setSavedMenuOpen(false);
+    }
   }
 
   function toggleFilesMenu() {
@@ -319,17 +334,221 @@
   });
 
   document.addEventListener('click', (e) => {
-    if (!filesMenuOpen) {
-      return;
-    }
-    if (!filesDropdownEl.contains(e.target)) {
+    if (filesMenuOpen && !filesDropdownEl.contains(e.target)) {
       setFilesMenuOpen(false);
+    }
+    if (savedMenuOpen && !savedDropdownEl.contains(e.target)) {
+      setSavedMenuOpen(false);
     }
   });
 
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && filesMenuOpen) {
+    if (e.key !== 'Escape') {
+      return;
+    }
+    if (savedMenuOpen) {
+      if (savedSearchEl.value) {
+        savedSearchEl.value = '';
+        savedActive = -1;
+        renderSavedMenu();
+      } else {
+        setSavedMenuOpen(false);
+      }
+      e.preventDefault();
+      return;
+    }
+    if (filesMenuOpen) {
       setFilesMenuOpen(false);
+    }
+  });
+
+  function filterSavedQueryList(list, needle) {
+    const n = String(needle || '').trim().toLowerCase();
+    if (!n) {
+      return list.slice();
+    }
+    return list.filter((item) => item.toLowerCase().includes(n));
+  }
+
+  function commitQuery() {
+    clearTimeout(queryDebounce);
+    vscode.postMessage({ type: 'queryChange', query: queryEl.value });
+    const state = vscode.getState();
+    if (state?.sourceUri) {
+      vscode.setState({ ...state, query: queryEl.value });
+    }
+  }
+
+  function setQueryValue(query) {
+    queryEl.value = query;
+    syncQueryOverlay();
+    updateQuerySyntaxHighlight();
+    updateEmptyStatePreview();
+    updateSavedAddEnabled();
+    hideSuggestions();
+    queryEl.focus();
+    commitQuery();
+  }
+
+  function visibleSavedQueries() {
+    return filterSavedQueryList(savedQueries, savedSearchEl.value);
+  }
+
+  function updateSavedAddEnabled() {
+    const current = queryEl.value.trim();
+    savedAddEl.disabled = !current || savedQueries.includes(current);
+  }
+
+  function highlightSavedItems() {
+    const items = savedListEl.querySelectorAll('.saved-item');
+    items.forEach((el, idx) => {
+      el.classList.toggle('active', idx === savedActive);
+    });
+    items[savedActive]?.scrollIntoView({ block: 'nearest' });
+  }
+
+  function applySavedQuery(query) {
+    setSavedMenuOpen(false);
+    setQueryValue(query);
+  }
+
+  function renderSavedMenu() {
+    updateSavedAddEnabled();
+    const filtered = visibleSavedQueries();
+    const fragment = document.createDocumentFragment();
+
+    if (savedQueries.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'saved-empty';
+      empty.textContent = 'No saved queries yet.';
+      fragment.appendChild(empty);
+    } else if (filtered.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'saved-empty';
+      empty.textContent = 'No matching saved queries.';
+      fragment.appendChild(empty);
+    } else {
+      if (savedActive >= filtered.length) {
+        savedActive = filtered.length - 1;
+      }
+      filtered.forEach((query, idx) => {
+        const item = document.createElement('div');
+        item.className = 'saved-item' + (idx === savedActive ? ' active' : '');
+        item.setAttribute('role', 'option');
+        item.title = query;
+
+        const text = document.createElement('span');
+        text.className = 'saved-item-text';
+        text.textContent = query;
+
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'saved-item-remove';
+        remove.title = 'Remove saved query';
+        remove.setAttribute('aria-label', 'Remove saved query');
+        remove.textContent = '×';
+        remove.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          vscode.postMessage({ type: 'removeSavedQuery', query });
+          savedSearchEl.focus();
+        });
+        remove.addEventListener('dblclick', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+
+        item.addEventListener('click', () => {
+          savedActive = idx;
+          highlightSavedItems();
+        });
+        item.addEventListener('dblclick', (e) => {
+          e.preventDefault();
+          applySavedQuery(query);
+        });
+
+        item.appendChild(text);
+        item.appendChild(remove);
+        fragment.appendChild(item);
+      });
+    }
+
+    savedListEl.replaceChildren(fragment);
+  }
+
+  function setSavedMenuOpen(open) {
+    savedMenuOpen = open;
+    savedMenuEl.classList.toggle('hidden', !open);
+    savedBtnEl.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) {
+      setFilesMenuOpen(false);
+      hideSuggestions();
+      savedSearchEl.value = '';
+      savedActive = -1;
+      renderSavedMenu();
+      savedSearchEl.focus();
+    } else {
+      savedSearchEl.value = '';
+      savedActive = -1;
+    }
+  }
+
+  function handleSavedQueriesState(msg) {
+    savedQueries = Array.isArray(msg.queries) ? msg.queries.map(String) : [];
+    if (savedMenuOpen) {
+      renderSavedMenu();
+    } else {
+      updateSavedAddEnabled();
+    }
+  }
+
+  savedBtnEl.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setSavedMenuOpen(!savedMenuOpen);
+  });
+
+  savedAddEl.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const query = queryEl.value.trim();
+    if (!query || savedQueries.includes(query)) {
+      return;
+    }
+    vscode.postMessage({ type: 'addSavedQuery', query });
+  });
+
+  savedSearchEl.addEventListener('input', () => {
+    savedActive = -1;
+    renderSavedMenu();
+  });
+
+  savedSearchEl.addEventListener('keydown', (e) => {
+    const filtered = visibleSavedQueries();
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (filtered.length === 0) {
+        return;
+      }
+      savedActive = Math.min(savedActive + 1, filtered.length - 1);
+      if (savedActive < 0) {
+        savedActive = 0;
+      }
+      highlightSavedItems();
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (filtered.length === 0) {
+        return;
+      }
+      savedActive = Math.max(savedActive - 1, 0);
+      highlightSavedItems();
+      return;
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (savedActive >= 0 && filtered[savedActive]) {
+        applySavedQuery(filtered[savedActive]);
+      }
     }
   });
 
@@ -446,12 +665,27 @@
     hideSuggestions();
     queryEl.focus();
     updateQuerySyntaxHighlight();
-    vscode.postMessage({ type: 'queryChange', query: queryEl.value });
+    commitQuery();
   }
 
   function hideSuggestions() {
     suggestionsEl.classList.add('hidden');
     suggestionActive = -1;
+  }
+
+  function hideFilterProgress() {
+    filterProgressEl.classList.add('hidden');
+    filterProgressEl.setAttribute('aria-hidden', 'true');
+    filterProgressEl.setAttribute('aria-valuenow', '0');
+    filterProgressFillEl.style.width = '0%';
+  }
+
+  function setFilterProgressPercent(percent) {
+    const n = Math.max(0, Math.min(99, Number(percent) || 0));
+    filterProgressEl.classList.remove('hidden');
+    filterProgressEl.setAttribute('aria-hidden', 'false');
+    filterProgressEl.setAttribute('aria-valuenow', String(n));
+    filterProgressFillEl.style.width = `${n}%`;
   }
 
   function persistPanelState(msg) {
@@ -474,8 +708,9 @@
     }
 
     const nextMatchCount = msg.matchCount ?? msg.stats?.matched ?? 0;
+    const filtering = msg.parseState === 'filtering';
     const filteredKey = `${msg.query ?? ''}|${nextMatchCount}|${msg.parseState ?? ''}`;
-    const filterChanged = filteredKey !== lastFilteredKey;
+    const filterChanged = !filtering && filteredKey !== lastFilteredKey;
     if (filterChanged) {
       lastFilteredKey = filteredKey;
       lastScrollTop = -1;
@@ -492,8 +727,11 @@
     knownTags = msg.tags || [];
     highlightTerms = msg.highlightTerms || [];
     maxLineNumber = msg.maxLineNumber || 1;
-    selectedIndex = matchCount > 0 ? 0 : -1;
+    if (!filtering) {
+      selectedIndex = matchCount > 0 ? 0 : -1;
+    }
     updateQuerySyntaxHighlight();
+    updateSavedAddEnabled();
 
     const matched = msg.stats?.matched ?? 0;
     const total = msg.stats?.total ?? 0;
@@ -501,7 +739,6 @@
     statsEl.textContent = queryEmpty ? `— / ${total}` : `${matched} / ${total}`;
 
     const parsing = msg.parseState === 'parsing';
-    const filtering = msg.parseState === 'filtering';
     const showEmpty = queryEmpty && !parsing && !filtering;
     emptyStateEl.classList.toggle('hidden', !showEmpty);
     scrollContentEl.classList.toggle('hidden', showEmpty);
@@ -518,40 +755,41 @@
       warningsEl.textContent = '';
     }
 
-    if (msg.parseState === 'parsing' || filtering) {
+    if (filtering) {
+      setFilterProgressPercent(0);
+    } else {
+      hideFilterProgress();
+    }
+
+    if (msg.parseState === 'parsing') {
       progressEl.classList.remove('hidden');
       const scan = msg.scanStats;
       const percent = scan?.percent;
-      if (msg.parseState === 'parsing' && (typeof percent !== 'number' || percent <= 0)) {
+      if (typeof percent !== 'number' || percent <= 0) {
         progressFillEl.style.width = '0%';
       }
-      if (!filtering && typeof percent === 'number' && percent >= 0) {
+      if (typeof percent === 'number' && percent >= 0) {
         progressEl.classList.remove('indeterminate');
         progressFillEl.style.width = `${Math.min(100, percent)}%`;
-      } else if (filtering) {
-        progressEl.classList.add('indeterminate');
-        progressFillEl.style.removeProperty('width');
       } else {
         progressEl.classList.add('indeterminate');
       }
-      progressTextEl.textContent = filtering
-        ? 'Filtering…'
-        : scan
-          ? formatScanStatus(scan)
-          : 'Scanning…';
+      progressTextEl.textContent = scan ? formatScanStatus(scan) : 'Scanning…';
     } else {
       progressEl.classList.add('hidden');
       progressEl.classList.remove('indeterminate');
     }
 
     updateGutterWidth();
-    rebuildLayout();
-    if (!showEmpty) {
-      renderVisibleRows(true);
-    } else {
-      rowsEl.replaceChildren();
+    if (!filtering) {
+      rebuildLayout();
+      if (!showEmpty) {
+        renderVisibleRows(true);
+      } else {
+        rowsEl.replaceChildren();
+      }
+      renderSelection();
     }
-    renderSelection();
     persistPanelState(msg);
     if (findActive && findQuery) {
       rebuildFindMatches();

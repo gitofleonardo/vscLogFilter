@@ -4,12 +4,14 @@ import { getLogFilterSettings } from '../config';
 import { extractHighlightTerms } from '../query';
 import { getWebviewHtml } from './webviewHtml';
 import { WorkerParser, type IndexSource } from './workerParser';
+import { inFlightFilterPercent } from '../worker/filterProgress';
 import { LOG_FILTER_PANEL_VIEW_TYPE, type LogFilterPanelState } from './panelState';
 import { chooseParseSource } from './parseSource';
 import { goToSourceLine } from './goToSourceLine';
 import { listOpenTextTabs, type OpenTextTabInfo } from '../openTextTabs';
 import { shortFileNameFromFsPath, shortFileNameFromUriString } from '../uriUtils';
 import { logError, logInfo } from '../logChannel';
+import { SavedQueriesStore, type SavedQueriesAccess } from './savedQueries';
 
 export { LOG_FILTER_PANEL_VIEW_TYPE };
 
@@ -78,6 +80,8 @@ export class LogFilterSession {
     private onPersist?: () => void,
     initialQuery = '',
     initialSelectedUris: string[] = [],
+    private savedQueriesAccess?: SavedQueriesAccess,
+    private onSavedQueriesChanged?: (queries: string[]) => void,
   ) {
     this.uri = uri;
     this.panel = panel;
@@ -271,15 +275,40 @@ export class LogFilterSession {
     });
   }
 
+  pushSavedQueries(queries?: string[]): void {
+    const list = queries ?? this.savedQueriesAccess?.list() ?? [];
+    void this.panel.webview.postMessage({
+      type: 'savedQueriesState',
+      queries: list,
+    });
+  }
+
   private onMessage(msg: { type: string; [k: string]: unknown }): void {
     switch (msg.type) {
       case 'ready':
         this.pushFilesState();
+        this.pushSavedQueries();
         break;
       case 'queryChange':
         this.setQuery(String(msg.query ?? ''));
         this.persist();
         break;
+      case 'addSavedQuery': {
+        if (!this.savedQueriesAccess) {
+          break;
+        }
+        const next = this.savedQueriesAccess.add(String(msg.query ?? ''));
+        this.onSavedQueriesChanged?.(next);
+        break;
+      }
+      case 'removeSavedQuery': {
+        if (!this.savedQueriesAccess) {
+          break;
+        }
+        const next = this.savedQueriesAccess.remove(String(msg.query ?? ''));
+        this.onSavedQueriesChanged?.(next);
+        break;
+      }
       case 'filesSelectionChange': {
         const uris = Array.isArray(msg.uris) ? msg.uris.map(String) : [];
         this.setSelectedUris(uris);
@@ -522,12 +551,20 @@ export class LogFilterSession {
       return;
     }
 
-    // Do not flip UI to "filtering" progress — that made the bar look like it
-    // restarted at 0% after indexing finished.
+    this.parseState = 'filtering';
+    this.postUpdate();
     const gen = ++this.filterGeneration;
     const started = Date.now();
     try {
-      const result = await this.workerParser.filterQuery(this.query, gen);
+      const result = await this.workerParser.filterQuery(this.query, gen, (processed, total) => {
+        if (gen !== this.filterGeneration) {
+          return;
+        }
+        void this.panel.webview.postMessage({
+          type: 'filterProgress',
+          percent: inFlightFilterPercent(processed, total),
+        });
+      });
       if (gen !== this.filterGeneration) {
         return;
       }
@@ -635,17 +672,16 @@ export class LogFilterSession {
     const highlightTerms = extractHighlightTerms(this.query);
 
     const scanning = this.parseState === 'parsing';
-    const filtering = this.parseState === 'filtering';
     const scan = this.scanStats;
     const total = scanning && scan ? scan.entryCount : this.totalEntryCount();
-    const matched = scanning || filtering ? 0 : this.matchedCount;
+    const matched = scanning ? 0 : this.matchedCount;
 
     this.panel.webview.postMessage({
       type: 'update',
       sourceUri: this.uri.toString(),
       sourceViewColumn: this.sourceViewColumn,
       query: this.query,
-      matchCount: scanning || filtering ? 0 : this.matchedCount,
+      matchCount: scanning ? 0 : this.matchedCount,
       selectedUris: this.selectedUris,
       stats: { total, matched },
       fileName,
@@ -701,11 +737,14 @@ function formatSize(bytes: number): string {
 export class LogFilterSessionManager {
   private sessions = new Map<string, LogFilterSession>();
   private static readonly PANELS_KEY = 'logFilter.panels';
+  private readonly savedQueries: SavedQueriesStore;
 
   constructor(
     private context: vscode.ExtensionContext,
     private extensionUri: vscode.Uri,
-  ) {}
+  ) {
+    this.savedQueries = new SavedQueriesStore(context);
+  }
 
   get(uri: vscode.Uri): LogFilterSession | undefined {
     return this.sessions.get(uri.toString());
@@ -819,6 +858,11 @@ export class LogFilterSessionManager {
     initialQuery = '',
     initialSelectedUris: string[] = [],
   ): LogFilterSession {
+    const savedQueriesAccess: SavedQueriesAccess = {
+      list: () => this.savedQueries.list(),
+      add: (query) => this.savedQueries.add(query),
+      remove: (query) => this.savedQueries.remove(query),
+    };
     let session!: LogFilterSession;
     session = new LogFilterSession(
       uri,
@@ -829,9 +873,17 @@ export class LogFilterSessionManager {
       () => this.persistSession(session),
       initialQuery,
       initialSelectedUris,
+      savedQueriesAccess,
+      (queries) => this.broadcastSavedQueries(queries),
     );
     this.persistSession(session);
     return session;
+  }
+
+  private broadcastSavedQueries(queries: string[]): void {
+    for (const session of this.sessions.values()) {
+      session.pushSavedQueries(queries);
+    }
   }
 
   private persistSession(session: LogFilterSession): void {
