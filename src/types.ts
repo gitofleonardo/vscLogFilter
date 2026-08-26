@@ -13,6 +13,14 @@ export interface LogEntry {
   lineNumber: number;
   /** Source document URI when indexing multiple files in one panel. */
   sourceUri?: string;
+  /** Inclusive start index of tag within fullText (first log line). */
+  tagStart?: number;
+  /** Exclusive end index of tag within fullText. */
+  tagEnd?: number;
+  /** Inclusive start index of message within fullText (includes continuations). */
+  messageStart?: number;
+  /** Exclusive end index of message within fullText. */
+  messageEnd?: number;
 }
 
 export interface ParseResult {
@@ -42,4 +50,14 @@ export interface SerializedLogEntry {
   lineNumber: number;
   sourceUri?: string;
   fileName?: string;
+  /** Parsed tag text; used for field-aware row highlighting. */
+  tag?: string;
+  /** Inclusive start index of tag within fullText. */
+  tagStart?: number;
+  /** Exclusive end index of tag within fullText. */
+  tagEnd?: number;
+  /** Inclusive start index of message within fullText. */
+  messageStart?: number;
+  /** Exclusive end index of message within fullText. */
+  messageEnd?: number;
 }

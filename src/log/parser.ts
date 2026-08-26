@@ -8,6 +8,115 @@ const THREADTIME_LINE =
 const TIME_LINE =
   /^(\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\s+([A-Z])\/(.+?)\(\s*(\d+)\):\s*(.*)$/;
 
+export interface FieldRange {
+  start: number;
+  end: number;
+  text: string;
+}
+
+interface LogFieldSpans {
+  tagStart: number;
+  tagEnd: number;
+  messageStart: number;
+  messageEnd: number;
+}
+
+function spansFromThreadtimeMatch(line: string, thread: RegExpExecArray): LogFieldSpans | undefined {
+  const tag = thread[5];
+  const message = thread[6];
+  const matchEnd = thread.index + thread[0].length;
+  const tagEnd = matchEnd - message.length - 2;
+  const tagStart = tagEnd - tag.length;
+  if (tagStart < 0 || line.slice(tagStart, tagEnd) !== tag) {
+    return undefined;
+  }
+  return {
+    tagStart,
+    tagEnd,
+    messageStart: tagEnd + 2,
+    messageEnd: matchEnd,
+  };
+}
+
+function spansFromTimeMatch(line: string, timeFmt: RegExpExecArray): LogFieldSpans | undefined {
+  const tag = timeFmt[3];
+  const message = timeFmt[5];
+  const levelSlash = `${timeFmt[2]}/`;
+  const slashPos = line.indexOf(levelSlash, timeFmt.index);
+  if (slashPos < 0) {
+    return undefined;
+  }
+  const tagStart = slashPos + levelSlash.length;
+  const tagEnd = tagStart + tag.length;
+  if (line.slice(tagStart, tagEnd) !== tag) {
+    return undefined;
+  }
+  const matchEnd = timeFmt.index + timeFmt[0].length;
+  const messageStart = matchEnd - message.length;
+  return {
+    tagStart,
+    tagEnd,
+    messageStart,
+    messageEnd: matchEnd,
+  };
+}
+
+/** Tag span in a parsed logcat line (first line only when text contains continuations). */
+export function findTagRangeInLine(line: string): FieldRange | undefined {
+  const firstLine = line.split('\n')[0] ?? line;
+  const thread = THREADTIME_LINE.exec(firstLine);
+  if (thread) {
+    const spans = spansFromThreadtimeMatch(firstLine, thread);
+    if (!spans) {
+      return undefined;
+    }
+    return { start: spans.tagStart, end: spans.tagEnd, text: thread[5] };
+  }
+
+  const timeFmt = TIME_LINE.exec(firstLine);
+  if (timeFmt) {
+    const spans = spansFromTimeMatch(firstLine, timeFmt);
+    if (!spans) {
+      return undefined;
+    }
+    return { start: spans.tagStart, end: spans.tagEnd, text: timeFmt[3] };
+  }
+
+  return undefined;
+}
+
+/** Message span on the first log line (continuations extend messageEnd on the entry). */
+export function findMessageRangeInLine(line: string): FieldRange | undefined {
+  const firstLine = line.split('\n')[0] ?? line;
+  const thread = THREADTIME_LINE.exec(firstLine);
+  if (thread) {
+    const spans = spansFromThreadtimeMatch(firstLine, thread);
+    if (!spans) {
+      return undefined;
+    }
+    return {
+      start: spans.messageStart,
+      end: spans.messageEnd,
+      text: thread[6],
+    };
+  }
+
+  const timeFmt = TIME_LINE.exec(firstLine);
+  if (timeFmt) {
+    const spans = spansFromTimeMatch(firstLine, timeFmt);
+    if (!spans) {
+      return undefined;
+    }
+    return {
+      start: spans.messageStart,
+      end: spans.messageEnd,
+      text: timeFmt[5],
+    };
+  }
+
+  return undefined;
+}
+
 const THREADTIME_HEURISTIC = /^\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\s+\d+/;
 
 type RawEntry = Omit<LogEntry, 'id' | 'parsedTime'>;
@@ -46,6 +155,7 @@ function parseLine(
   if (thread) {
     acc.format = acc.format === 'time' ? 'mixed' : acc.format === 'unknown' ? 'threadtime' : acc.format;
     acc.timestamps.push(thread[1]);
+    const spans = spansFromThreadtimeMatch(line, thread);
     acc.rawEntries.push({
       timestamp: thread[1],
       pid: parseInt(thread[2], 10),
@@ -57,6 +167,10 @@ function parseLine(
       fullText: line,
       lineNumber,
       sourceUri,
+      tagStart: spans?.tagStart,
+      tagEnd: spans?.tagEnd,
+      messageStart: spans?.messageStart,
+      messageEnd: spans?.messageEnd,
     });
     return;
   }
@@ -65,6 +179,7 @@ function parseLine(
   if (timeFmt) {
     acc.format = acc.format === 'threadtime' ? 'mixed' : acc.format === 'unknown' ? 'time' : acc.format;
     acc.timestamps.push(timeFmt[1]);
+    const spans = spansFromTimeMatch(line, timeFmt);
     acc.rawEntries.push({
       timestamp: timeFmt[1],
       level: timeFmt[2],
@@ -75,6 +190,10 @@ function parseLine(
       fullText: line,
       lineNumber,
       sourceUri,
+      tagStart: spans?.tagStart,
+      tagEnd: spans?.tagEnd,
+      messageStart: spans?.messageStart,
+      messageEnd: spans?.messageEnd,
     });
     return;
   }
@@ -86,6 +205,9 @@ function parseLine(
     }
     last.message += '\n' + line;
     last.fullText += '\n' + line;
+    if (last.messageStart !== undefined) {
+      last.messageEnd = last.fullText.length;
+    }
   }
 }
 

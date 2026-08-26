@@ -59,6 +59,11 @@ function toSerializedRow(entry: LogEntry, displayId: number): SerializedLogEntry
     lineNumber: entry.lineNumber,
     sourceUri: entry.sourceUri,
     fileName: entry.sourceUri ? shortFileNameFromUriString(entry.sourceUri) : undefined,
+    tag: entry.tag,
+    tagStart: entry.tagStart,
+    tagEnd: entry.tagEnd,
+    messageStart: entry.messageStart,
+    messageEnd: entry.messageEnd,
   };
 }
 

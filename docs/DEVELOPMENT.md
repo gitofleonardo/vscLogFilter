@@ -13,9 +13,11 @@
 Before treating a change as done (ready to ship or commit), **must** run from the repo root:
 
 ```bash
+npm run build
 npm test
 ```
 
+- `npm run build` produces the extension, Worker, and webview highlight bundle (`media/highlightRanges.js`).
 - The full suite must pass; do not stop after a single test file.
 - If anything fails: fix code or tests, then re-run until green. Do not merge/commit with failing tests.
 

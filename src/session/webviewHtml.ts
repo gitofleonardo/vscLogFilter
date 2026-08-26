@@ -2,6 +2,9 @@ import * as vscode from 'vscode';
 
 export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
   const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'styles.css'));
+  const highlightScriptUri = webview.asWebviewUri(
+    vscode.Uri.joinPath(extensionUri, 'media', 'highlightRanges.js'),
+  );
   const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'main.js'));
   const nonce = getNonce();
 
@@ -69,6 +72,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     <span id="filename"></span>
     <span id="warnings"></span>
   </div>
+  <script nonce="${nonce}" src="${highlightScriptUri}"></script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;

@@ -6,8 +6,9 @@ export {
   extractHighlightTerms,
   tokenizeQueryForDisplay,
   renderQueryHighlightHtml,
+  collectHighlightRanges,
 } from './highlights';
-export type { HighlightTerm, QueryTokenSpan } from './highlights';
+export type { HighlightTerm, QueryTokenSpan, HighlightRange, RowHighlightMeta } from './highlights';
 export type { FilterNode, ParseQueryResult, FilterContext } from './ast';
 
 import type { LogEntry } from '../types';

@@ -13,9 +13,11 @@
 在认为改动完成、准备交付或提交前，**必须**在仓库根目录执行：
 
 ```bash
+npm run build
 npm test
 ```
 
+- `npm run build` 会生成 extension、Worker 与 webview 高亮脚本（`media/highlightRanges.js`）。
 - 全量套件须全部通过，不得只跑单个文件就结束。
 - 若全量失败：先修代码或测试，再重新跑通；不要带着红测合并/提交。
 

@@ -1096,7 +1096,7 @@
 
         el.innerHTML =
           `<span class="gutter">${lineNo}</span>` +
-          `<pre class="line-text">${prefixHtml}${highlightRowText(text, i)}</pre>`;
+          `<pre class="line-text">${prefixHtml}${highlightRowText(text, i, row)}</pre>`;
 
         el.addEventListener('click', () => selectIndex(i));
         el.addEventListener('dblclick', () => {
@@ -1357,53 +1357,26 @@
     return { text, end: i };
   }
 
-  function highlightRowText(text, rowIndex) {
-    const ranges = collectQueryHighlightRanges(text);
+  function highlightRowText(text, rowIndex, row) {
+    const ranges = collectQueryHighlightRanges(text, row);
     if (findActive && findQuery) {
       collectFindHighlightRanges(text, rowIndex, ranges);
     }
     return renderHighlightRanges(text, ranges);
   }
 
-  function collectQueryHighlightRanges(text) {
-    const ranges = [];
+  function collectQueryHighlightRanges(text, row) {
     if (!text || !highlightTerms.length) {
-      return ranges;
+      return [];
     }
-
-    const hay = text.toLowerCase();
-    for (const term of highlightTerms) {
-      if (!term.text) {
-        continue;
-      }
-      const needle = term.text.toLowerCase();
-      if (term.exact) {
-        let idx = 0;
-        while (idx <= hay.length) {
-          if (hay.slice(idx, idx + needle.length) === needle) {
-            const before = idx === 0 || /\s/.test(hay[idx - 1]);
-            const after = idx + needle.length === hay.length || /\s/.test(hay[idx + needle.length]);
-            if (before && after) {
-              ranges.push({ start: idx, end: idx + needle.length, className: 'match-hl' });
-            }
-            idx += needle.length;
-          } else {
-            idx++;
-          }
-        }
-        continue;
-      }
-      let idx = 0;
-      while (idx < hay.length) {
-        const found = hay.indexOf(needle, idx);
-        if (found === -1) {
-          break;
-        }
-        ranges.push({ start: found, end: found + needle.length, className: 'match-hl' });
-        idx = found + 1;
-      }
+    const hl = globalThis.LogFilterHighlights;
+    if (!hl?.collectHighlightRanges) {
+      return [];
     }
-    return ranges;
+    return hl.collectHighlightRanges(text, highlightTerms, row ?? {}).map((r) => ({
+      ...r,
+      className: 'match-hl',
+    }));
   }
 
   function collectFindHighlightRanges(text, rowIndex, ranges) {

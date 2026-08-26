@@ -55,6 +55,132 @@ function collectTerms(node: FilterNode, out: HighlightTerm[]): void {
   }
 }
 
+export interface HighlightRange {
+  start: number;
+  end: number;
+}
+
+export interface RowHighlightMeta {
+  tagStart?: number;
+  tagEnd?: number;
+  messageStart?: number;
+  messageEnd?: number;
+}
+
+export function collectHighlightRanges(
+  text: string,
+  terms: HighlightTerm[],
+  row: RowHighlightMeta = {},
+): HighlightRange[] {
+  const ranges: HighlightRange[] = [];
+  if (!text || !terms.length) {
+    return ranges;
+  }
+
+  const hay = text.toLowerCase();
+  for (const term of terms) {
+    if (!term.text) {
+      continue;
+    }
+
+    if (term.field === 'tag' && row.tagStart != null && row.tagEnd != null) {
+      collectInFieldSpan(text, row.tagStart, row.tagEnd, term, ranges);
+      continue;
+    }
+
+    if (term.field === 'message' && row.messageStart != null && row.messageEnd != null) {
+      collectInFieldSpan(text, row.messageStart, row.messageEnd, term, ranges);
+      continue;
+    }
+
+    if (term.field === 'line' && term.exact) {
+      if (text === term.text) {
+        ranges.push({ start: 0, end: text.length });
+      }
+      continue;
+    }
+
+    const needle = term.text.toLowerCase();
+
+    if (term.exact) {
+      let idx = 0;
+      while (idx <= hay.length) {
+        if (hay.slice(idx, idx + needle.length) === needle) {
+          const end = idx + needle.length;
+          if (isExactHighlightBoundary(hay, idx, end, term.field)) {
+            ranges.push({ start: idx, end });
+          }
+          idx += needle.length;
+        } else {
+          idx++;
+        }
+      }
+      continue;
+    }
+
+    let idx = 0;
+    while (idx < hay.length) {
+      const found = hay.indexOf(needle, idx);
+      if (found === -1) {
+        break;
+      }
+      ranges.push({ start: found, end: found + needle.length });
+      idx = found + 1;
+    }
+  }
+
+  return ranges;
+}
+
+function collectInFieldSpan(
+  text: string,
+  spanStart: number,
+  spanEnd: number,
+  term: HighlightTerm,
+  ranges: HighlightRange[],
+): void {
+  const slice = text.slice(spanStart, spanEnd);
+  if (term.exact) {
+    if (slice === term.text) {
+      ranges.push({ start: spanStart, end: spanEnd });
+    }
+    return;
+  }
+
+  const hay = slice.toLowerCase();
+  const needle = term.text.toLowerCase();
+  let idx = 0;
+  while (idx < hay.length) {
+    const found = hay.indexOf(needle, idx);
+    if (found === -1) {
+      break;
+    }
+    ranges.push({
+      start: spanStart + found,
+      end: spanStart + found + needle.length,
+    });
+    idx = found + 1;
+  }
+}
+
+function isExactHighlightBoundary(
+  hay: string,
+  start: number,
+  end: number,
+  field: HighlightTerm['field'],
+): boolean {
+  const beforeOk = start === 0 || /\s/.test(hay[start - 1]);
+  if (end === hay.length) {
+    return beforeOk;
+  }
+  const afterChar = hay[end];
+  if (field === 'pid') {
+    const beforeDigitOk = start === 0 || !/\d/.test(hay[start - 1]);
+    return beforeDigitOk && !/\d/.test(afterChar);
+  }
+  return beforeOk && /\s/.test(afterChar);
+}
+
 function dedupeTerms(terms: HighlightTerm[]): HighlightTerm[] {
   const seen = new Set<string>();
   const result: HighlightTerm[] = [];
