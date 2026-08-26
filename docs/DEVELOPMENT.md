@@ -40,4 +40,4 @@ Press F5 in VS Code to launch the Extension Development Host for manual checks.
 
 ---
 
-简体中文：[DEVELOPMENT_CN.md](DEVELOPMENT_CN.md)
+简体中文：[DEVELOPMENT_CN.md](DEVELOPMENT_CN.md) · Syntax implementation: [SYNTAX.md](SYNTAX.md)

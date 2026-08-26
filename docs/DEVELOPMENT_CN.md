@@ -40,4 +40,4 @@ npm test
 
 ---
 
-English: [DEVELOPMENT.md](DEVELOPMENT.md)
+English: [DEVELOPMENT.md](DEVELOPMENT.md) · 语法实现：[SYNTAX_CN.md](SYNTAX_CN.md)

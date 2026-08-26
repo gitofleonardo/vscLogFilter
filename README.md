@@ -82,6 +82,8 @@ Press F5 in VS Code to launch Extension Development Host.
 
 Android Studio Logcat filter sources (Apache 2.0) are vendored under `reference/as-logcat/` for behavioral alignment.
 
+Implementation details (parser, evaluator, highlighting): [docs/SYNTAX.md](docs/SYNTAX.md) ([中文](docs/SYNTAX_CN.md)).
+
 ## License
 
 Apache License 2.0. See LICENSE and NOTICE.

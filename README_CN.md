@@ -82,6 +82,8 @@ npm test
 
 Android Studio Logcat 过滤器源码（Apache 2.0）已 vendored 至 `reference/as-logcat/`，用于行为对齐参考。
 
+语法与实现细节（解析、求值、高亮）：[docs/SYNTAX_CN.md](docs/SYNTAX_CN.md)（[English](docs/SYNTAX.md)）。
+
 ## 许可证
 
 Apache License 2.0。详见 LICENSE 与 NOTICE。
