@@ -356,23 +356,27 @@ mark.match-hl {
 }
 
 mark.find-hl {
-  background: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 92, 0, 0.45));
+  background: rgba(46, 160, 67, 0.45);
   color: inherit;
   border-radius: 2px;
   padding: 0;
 }
 
 mark.find-hl.find-current {
-  background: var(--vscode-editor-findMatchBackground, rgba(81, 92, 106, 0.8));
-  outline: 1px solid var(--vscode-editor-findMatchBorder, #515c6a);
+  background: rgba(46, 160, 67, 0.72);
+  outline: 1px solid rgba(63, 185, 80, 0.95);
 }
 
 .row.selected mark.match-hl {
   background: var(--vscode-editor-findMatchHighlightBorder, rgba(255, 255, 255, 0.3));
 }
 
+.row.selected mark.find-hl {
+  background: rgba(46, 160, 67, 0.55);
+}
+
 .row.selected mark.find-hl.find-current {
-  background: var(--vscode-list-activeSelectionBackground);
+  background: rgba(46, 160, 67, 0.85);
   outline: 1px solid var(--vscode-focusBorder);
 }
 
