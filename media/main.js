@@ -828,6 +828,9 @@
       rebuildLayout();
     }
     renderVisibleRows(true);
+    if (findActive && currentMatchIndex >= 0) {
+      queueScrollFindMatchIntoView();
+    }
     if (pendingGoToIndex >= 0) {
       const row = rowCache.get(pendingGoToIndex);
       if (row) {
@@ -1031,6 +1034,52 @@
     selectIndex(rowIndex, true);
     findNavSynced = true;
     renderVisibleRows(true);
+    queueScrollFindMatchIntoView();
+  }
+
+  function queueScrollFindMatchIntoView() {
+    requestAnimationFrame(() => {
+      if (scrollFindMatchIntoViewHorizontally()) {
+        return;
+      }
+      requestAnimationFrame(() => scrollFindMatchIntoViewHorizontally());
+    });
+  }
+
+  function scrollFindMatchIntoViewHorizontally() {
+    if (currentMatchIndex < 0 || !findMatches.length) {
+      return false;
+    }
+
+    const { rowIndex } = findMatches[currentMatchIndex];
+    const rowEl = rowsEl.querySelector(`.row[data-index="${rowIndex}"]`);
+    if (!rowEl) {
+      return false;
+    }
+
+    const markEl = rowEl.querySelector('mark.find-current');
+    if (!markEl) {
+      return false;
+    }
+
+    const listRect = listEl.getBoundingClientRect();
+    const markRect = markEl.getBoundingClientRect();
+    const viewWidth = listEl.clientWidth;
+    const markWidth = markRect.width;
+    let delta = 0;
+
+    if (markWidth > viewWidth) {
+      delta = markRect.left - listRect.left;
+    } else if (markRect.left < listRect.left) {
+      delta = markRect.left - listRect.left;
+    } else if (markRect.right > listRect.right) {
+      delta = markRect.right - listRect.right;
+    }
+
+    if (delta !== 0) {
+      listEl.scrollLeft = Math.max(0, listEl.scrollLeft + delta);
+    }
+    return true;
   }
 
   function rowLineCount(row) {
