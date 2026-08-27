@@ -88,6 +88,7 @@
   let findQuery = '';
   let findMatches = [];
   let currentMatchIndex = -1;
+  let findNavSynced = false;
   let findDebounce;
   let primaryUri = '';
   let selectedUris = [];
@@ -556,9 +557,9 @@
     clearTimeout(findDebounce);
     findDebounce = setTimeout(() => {
       findQuery = findInputEl.value;
-      currentMatchIndex = findQuery ? 0 : -1;
+      currentMatchIndex = -1;
+      findNavSynced = false;
       rebuildFindMatches();
-      scrollToCurrentMatch();
     }, 100);
   });
 
@@ -792,6 +793,8 @@
     }
     persistPanelState(msg);
     if (findActive && findQuery) {
+      currentMatchIndex = -1;
+      findNavSynced = false;
       rebuildFindMatches();
     }
   }
@@ -885,6 +888,47 @@
     vscode.postMessage({ type: 'requestRows', start: lo, end: hi, requestId });
   }
 
+  function getFindNav() {
+    return globalThis.LogFilterFindNav;
+  }
+
+  function getFindAnchor() {
+    const rowIndex = selectedIndex >= 0 ? selectedIndex : findRowAtOffset(listEl.scrollTop);
+    return { rowIndex, offset: 0 };
+  }
+
+  function resolveMatchFromAnchor(direction) {
+    const nav = getFindNav();
+    if (!nav?.resolveMatchFromAnchor) {
+      return findMatches.length ? 0 : -1;
+    }
+    return nav.resolveMatchFromAnchor(findMatches, getFindAnchor(), direction);
+  }
+
+  function computeNextFindIndex() {
+    const nav = getFindNav();
+    if (!nav?.computeNextFindIndex) {
+      return 0;
+    }
+    const current =
+      currentMatchIndex >= 0 && currentMatchIndex < findMatches.length
+        ? findMatches[currentMatchIndex]
+        : null;
+    return nav.computeNextFindIndex(findMatches, getFindAnchor(), current, selectedIndex, findNavSynced);
+  }
+
+  function computePrevFindIndex() {
+    const nav = getFindNav();
+    if (!nav?.computePrevFindIndex) {
+      return findMatches.length - 1;
+    }
+    const current =
+      currentMatchIndex >= 0 && currentMatchIndex < findMatches.length
+        ? findMatches[currentMatchIndex]
+        : null;
+    return nav.computePrevFindIndex(findMatches, getFindAnchor(), current, selectedIndex, findNavSynced);
+  }
+
   function showFindBar() {
     findBarEl.classList.remove('hidden');
     findActive = true;
@@ -901,6 +945,7 @@
     findActive = false;
     findMatches = [];
     currentMatchIndex = -1;
+    findNavSynced = false;
     updateFindStatus();
     renderVisibleRows(true);
     listEl.focus();
@@ -924,8 +969,10 @@
     findMatches = msg.matches || [];
     if (findMatches.length === 0) {
       currentMatchIndex = -1;
+      findNavSynced = false;
     } else if (currentMatchIndex < 0 || currentMatchIndex >= findMatches.length) {
-      currentMatchIndex = 0;
+      currentMatchIndex = resolveMatchFromAnchor(1);
+      findNavSynced = false;
     }
     updateFindStatus();
     if (msg.capped && findMatches.length) {
@@ -961,7 +1008,8 @@
     if (!findMatches.length) {
       return;
     }
-    currentMatchIndex = (currentMatchIndex + delta + findMatches.length) % findMatches.length;
+    currentMatchIndex = delta > 0 ? computeNextFindIndex() : computePrevFindIndex();
+    findNavSynced = true;
     updateFindStatus();
     scrollToCurrentMatch();
   }
@@ -980,6 +1028,8 @@
     if (rowTop < viewTop || rowTop + height > viewBottom) {
       listEl.scrollTop = Math.max(0, rowTop - Math.floor(listEl.clientHeight / 3));
     }
+    selectIndex(rowIndex, true);
+    findNavSynced = true;
     renderVisibleRows(true);
   }
 
@@ -1115,7 +1165,10 @@
     listEl.scrollLeft = scrollLeft;
   }
 
-  function selectIndex(index) {
+  function selectIndex(index, fromFindNav = false) {
+    if (!fromFindNav) {
+      findNavSynced = false;
+    }
     selectedIndex = index;
     renderSelection();
     if (index >= 0 && index < matchCount) {

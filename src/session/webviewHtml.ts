@@ -5,6 +5,9 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
   const highlightScriptUri = webview.asWebviewUri(
     vscode.Uri.joinPath(extensionUri, 'media', 'highlightRanges.js'),
   );
+  const findNavScriptUri = webview.asWebviewUri(
+    vscode.Uri.joinPath(extensionUri, 'media', 'findNavigation.js'),
+  );
   const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'main.js'));
   const nonce = getNonce();
 
@@ -73,6 +76,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     <span id="warnings"></span>
   </div>
   <script nonce="${nonce}" src="${highlightScriptUri}"></script>
+  <script nonce="${nonce}" src="${findNavScriptUri}"></script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;

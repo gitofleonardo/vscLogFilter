@@ -34,21 +34,36 @@ const webviewHighlightCtx = esbuild.context({
   logLevel: 'info',
 });
 
+const webviewFindNavCtx = esbuild.context({
+  bundle: true,
+  sourcemap: true,
+  platform: 'browser',
+  format: 'iife',
+  globalName: 'LogFilterFindNav',
+  entryPoints: ['media/findNavigation-entry.ts'],
+  outfile: 'media/findNavigation.js',
+  logLevel: 'info',
+});
+
 async function main() {
   const ext = await extensionCtx;
   const worker = await workerCtx;
   const webviewHighlight = await webviewHighlightCtx;
+  const webviewFindNav = await webviewFindNavCtx;
   if (watch) {
     await ext.watch();
     await worker.watch();
     await webviewHighlight.watch();
+    await webviewFindNav.watch();
   } else {
     await ext.rebuild();
     await worker.rebuild();
     await webviewHighlight.rebuild();
+    await webviewFindNav.rebuild();
     await ext.dispose();
     await worker.dispose();
     await webviewHighlight.dispose();
+    await webviewFindNav.dispose();
   }
 }
 
