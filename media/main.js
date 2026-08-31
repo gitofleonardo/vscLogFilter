@@ -371,9 +371,7 @@
 
       const lineNo = item.lineNumber + 1;
       const text = item.fullText || '';
-      const prefixHtml = item.fileName
-        ? `<span class="file-prefix">${escapeHtml(item.fileName)}:</span>`
-        : '';
+      const prefixHtml = item.fileName ? filePrefixHtml(item.fileName) : '';
 
       el.innerHTML =
         `<span class="gutter">${lineNo}</span>` +
@@ -1587,9 +1585,7 @@
         const lineNo = row.lineNumber + 1;
         const text = row.fullText || '';
         const showFilePrefix = selectedFileCount > 1 && row.fileName;
-        const prefixHtml = showFilePrefix
-          ? `<span class="file-prefix">${escapeHtml(row.fileName)}:</span>`
-          : '';
+        const prefixHtml = showFilePrefix ? filePrefixHtml(row.fileName) : '';
 
         el.innerHTML =
           `<span class="gutter">${lineNo}</span>` +
@@ -1666,6 +1662,24 @@
     }
     pendingGoToIndex = selectedIndex;
     ensureRows(selectedIndex, selectedIndex + 1);
+  }
+
+  function truncateDisplayFileName(name) {
+    const s = String(name ?? '');
+    const omitted = s.length - 6 - 6;
+    if (omitted <= 3) {
+      return s;
+    }
+    return s.slice(0, 6) + '...' + s.slice(-6);
+  }
+
+  function filePrefixHtml(fileName) {
+    if (!fileName) {
+      return '';
+    }
+    const display = truncateDisplayFileName(fileName);
+    const titleAttr = display !== fileName ? ` title="${escapeHtml(fileName)}"` : '';
+    return `<span class="file-prefix"${titleAttr}>${escapeHtml(display)}:</span>`;
   }
 
   function escapeHtml(s) {

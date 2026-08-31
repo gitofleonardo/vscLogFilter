@@ -35,3 +35,17 @@ export function shortFileNameFromUriString(uriString: string): string {
     return raw;
   }
 }
+
+const DISPLAY_HEAD = 6;
+const DISPLAY_TAIL = 6;
+const ELLIPSIS = '...';
+
+/** Truncate long display names to first 6 + ... + last 6 when omitted middle > ellipsis length. */
+export function truncateDisplayFileName(name: string): string {
+  const s = String(name ?? '');
+  const omitted = s.length - DISPLAY_HEAD - DISPLAY_TAIL;
+  if (omitted <= ELLIPSIS.length) {
+    return s;
+  }
+  return `${s.slice(0, DISPLAY_HEAD)}${ELLIPSIS}${s.slice(-DISPLAY_TAIL)}`;
+}
