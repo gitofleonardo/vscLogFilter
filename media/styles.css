@@ -486,22 +486,23 @@ mark.find-hl.find-current {
   flex: 1;
 }
 
-#find-bar {
+.find-bar {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 4px 8px;
   border-bottom: 1px solid var(--vscode-panel-border);
   background: var(--vscode-editorWidget-background);
+  flex: 0 0 auto;
 }
 
-#find-bar.hidden {
+.find-bar.hidden {
   display: none;
 }
 
-#find-input {
+.find-bar .find-input {
   flex: 1;
-  min-width: 120px;
+  min-width: 80px;
   padding: 3px 6px;
   border: 1px solid var(--vscode-input-border);
   border-radius: 2px;
@@ -511,12 +512,12 @@ mark.find-hl.find-current {
   font-size: var(--vscode-font-size);
 }
 
-#find-input:focus {
+.find-bar .find-input:focus {
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: -1px;
 }
 
-#find-status {
+.find-bar .find-status {
   white-space: nowrap;
   font-size: 0.85em;
   color: var(--vscode-descriptionForeground);
@@ -524,7 +525,7 @@ mark.find-hl.find-current {
   text-align: center;
 }
 
-#find-bar button {
+.find-bar button {
   padding: 2px 8px;
   border: 1px solid var(--vscode-button-border, transparent);
   border-radius: 2px;
@@ -535,7 +536,7 @@ mark.find-hl.find-current {
   line-height: 1.4;
 }
 
-#find-bar button:hover {
+.find-bar button:hover {
   background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.35));
 }
 

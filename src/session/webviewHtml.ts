@@ -9,6 +9,9 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     vscode.Uri.joinPath(extensionUri, 'media', 'findNavigation.js'),
   );
   const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'main.js'));
+  const findControllerScriptUri = webview.asWebviewUri(
+    vscode.Uri.joinPath(extensionUri, 'media', 'findController.js'),
+  );
   const nonce = getNonce();
 
   return `<!DOCTYPE html>
@@ -53,17 +56,17 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     <div id="progress-track"><div id="progress-fill"></div></div>
     <span id="progress-text">Parsing…</span>
   </div>
-  <div id="find-bar" class="hidden" role="search">
-    <input id="find-input" type="text" placeholder="Find in results…" spellcheck="false" autocomplete="off" aria-label="Find in results" />
-    <span id="find-status" aria-live="polite"></span>
-    <button id="find-prev" type="button" title="Previous match (Shift+F3)">↑</button>
-    <button id="find-next" type="button" title="Next match (F3)">↓</button>
-    <button id="find-close" type="button" title="Close (Escape)">×</button>
-  </div>
   <div id="results-split">
     <div id="results-main">
       <div id="filter-progress" class="hidden" role="progressbar" aria-label="Filtering" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-hidden="true">
         <div id="filter-progress-fill"></div>
+      </div>
+      <div id="main-find-bar" class="find-bar hidden" role="search">
+        <input id="main-find-input" class="find-input" type="text" placeholder="Find in results…" spellcheck="false" autocomplete="off" aria-label="Find in results" />
+        <span id="main-find-status" class="find-status" aria-live="polite"></span>
+        <button id="main-find-prev" class="find-prev" type="button" title="Previous match (Shift+F3)">↑</button>
+        <button id="main-find-next" class="find-next" type="button" title="Next match (F3)">↓</button>
+        <button id="main-find-close" class="find-close" type="button" title="Close (Escape)">×</button>
       </div>
       <div id="list" tabindex="0">
         <div id="empty-state">Enter a filter query to show matching log lines</div>
@@ -83,6 +86,13 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
         <span id="cherry-stats">0 lines</span>
         <button id="cherry-clear" type="button">Clear All</button>
       </div>
+      <div id="cherry-find-bar" class="find-bar hidden" role="search">
+        <input id="cherry-find-input" class="find-input" type="text" placeholder="Find in results…" spellcheck="false" autocomplete="off" aria-label="Find in cherry results" />
+        <span id="cherry-find-status" class="find-status" aria-live="polite"></span>
+        <button id="cherry-find-prev" class="find-prev" type="button" title="Previous match (Shift+F3)">↑</button>
+        <button id="cherry-find-next" class="find-next" type="button" title="Next match (F3)">↓</button>
+        <button id="cherry-find-close" class="find-close" type="button" title="Close (Escape)">×</button>
+      </div>
       <div id="cherry-list" tabindex="0">
         <div id="cherry-empty">No picked lines yet</div>
         <div id="cherry-rows"></div>
@@ -96,6 +106,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
   <div id="context-menu" class="context-menu hidden" role="menu"></div>
   <script nonce="${nonce}" src="${highlightScriptUri}"></script>
   <script nonce="${nonce}" src="${findNavScriptUri}"></script>
+  <script nonce="${nonce}" src="${findControllerScriptUri}"></script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;

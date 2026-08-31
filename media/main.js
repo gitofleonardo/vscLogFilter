@@ -16,12 +16,6 @@
   const progressTextEl = document.getElementById('progress-text');
   const filterProgressEl = document.getElementById('filter-progress');
   const filterProgressFillEl = document.getElementById('filter-progress-fill');
-  const findBarEl = document.getElementById('find-bar');
-  const findInputEl = document.getElementById('find-input');
-  const findStatusEl = document.getElementById('find-status');
-  const findPrevEl = document.getElementById('find-prev');
-  const findNextEl = document.getElementById('find-next');
-  const findCloseEl = document.getElementById('find-close');
   const filesBtnEl = document.getElementById('files-btn');
   const filesCountEl = document.getElementById('files-count');
   const filesMenuEl = document.getElementById('files-menu');
@@ -98,12 +92,6 @@
   let selectedIndex = -1;
   let queryDebounce;
   let suggestionActive = -1;
-  let findActive = false;
-  let findQuery = '';
-  let findMatches = [];
-  let currentMatchIndex = -1;
-  let findNavSynced = false;
-  let findDebounce;
   let primaryUri = '';
   let selectedUris = [];
   let openFiles = [];
@@ -114,7 +102,6 @@
   let savedActive = -1;
   let rowRequestId = 0;
   let pendingRowRequest = null;
-  let findRequestId = 0;
   let filterEpoch = 0;
   let pendingGoToIndex = -1;
   let pickedKeys = new Set();
@@ -127,6 +114,9 @@
   let cherryItems = [];
   let cherrySelectedIndex = -1;
   let contextMenuKind = '';
+  let mainFind;
+  let cherryFind;
+  const mainFindCallbacks = new Map();
 
   function formatCount(n) {
     if (n >= 1_000_000) {
@@ -239,7 +229,11 @@
     } else if (msg.type === 'rows') {
       handleRows(msg);
     } else if (msg.type === 'findMatches') {
-      handleFindMatches(msg);
+      const cb = mainFindCallbacks.get(msg.requestId);
+      if (cb) {
+        mainFindCallbacks.delete(msg.requestId);
+        cb({ matches: msg.matches || [], capped: !!msg.capped });
+      }
     } else if (msg.type === 'filesState') {
       handleFilesState(msg);
     } else if (msg.type === 'savedQueriesState') {
@@ -249,11 +243,11 @@
     } else if (msg.type === 'cherryUpdate') {
       handleCherryUpdate(msg);
     } else if (msg.type === 'showFind') {
-      showFindBar();
+      resolveFindController().show();
     } else if (msg.type === 'findNext') {
-      advanceFind(1);
+      resolveFindController().advance(1);
     } else if (msg.type === 'findPrevious') {
-      advanceFind(-1);
+      resolveFindController().advance(-1);
     }
   });
 
@@ -354,6 +348,9 @@
     }
     renderCherryRows();
     renderSelection();
+    if (cherryFind) {
+      cherryFind.onContentChanged();
+    }
     if (msg.expand === true) {
       setCherryExpanded(true);
     }
@@ -375,7 +372,7 @@
 
       el.innerHTML =
         `<span class="gutter">${lineNo}</span>` +
-        `<pre class="line-text">${prefixHtml}${highlightCherryText(text, item)}</pre>`;
+        `<pre class="line-text">${prefixHtml}${highlightCherryText(text, i, item)}</pre>`;
 
       el.addEventListener('click', () => selectCherryIndex(i));
       el.addEventListener('dblclick', () => goToCherryItem(item));
@@ -441,18 +438,22 @@
     }
   }
 
-  function highlightCherryText(text, row) {
-    if (!text || !highlightTerms.length) {
+  function highlightCherryText(text, rowIndex, row) {
+    const ranges = [];
+    if (cherryFind) {
+      cherryFind.collectHighlightRanges(text, rowIndex, ranges);
+    }
+    if (text && highlightTerms.length) {
+      const hl = globalThis.LogFilterHighlights;
+      if (hl?.collectHighlightRanges) {
+        for (const r of hl.collectHighlightRanges(text, highlightTerms, row ?? {})) {
+          ranges.push({ ...r, className: 'match-hl' });
+        }
+      }
+    }
+    if (!ranges.length) {
       return escapeHtml(text);
     }
-    const hl = globalThis.LogFilterHighlights;
-    if (!hl?.collectHighlightRanges) {
-      return escapeHtml(text);
-    }
-    const ranges = hl.collectHighlightRanges(text, highlightTerms, row ?? {}).map((r) => ({
-      ...r,
-      className: 'match-hl',
-    }));
     return renderHighlightRanges(text, ranges);
   }
 
@@ -934,38 +935,25 @@
     }
   });
 
-  findInputEl.addEventListener('input', () => {
-    clearTimeout(findDebounce);
-    findDebounce = setTimeout(() => {
-      findQuery = findInputEl.value;
-      currentMatchIndex = -1;
-      findNavSynced = false;
-      rebuildFindMatches();
-    }, 100);
-  });
-
-  findInputEl.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      advanceFind(e.shiftKey ? -1 : 1);
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      hideFindBar();
-    }
-  });
-
-  findPrevEl.addEventListener('click', () => advanceFind(-1));
-  findNextEl.addEventListener('click', () => advanceFind(1));
-  findCloseEl.addEventListener('click', () => hideFindBar());
-
   document.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
       e.preventDefault();
-      showFindBar();
+      resolveFindController().show();
       return;
     }
-    if (findActive && e.key === 'Escape' && document.activeElement !== findInputEl) {
-      hideFindBar();
+    if (e.key === 'Escape') {
+      const activeEl = document.activeElement;
+      const mainBar = document.getElementById('main-find-bar');
+      const cherryBar = document.getElementById('cherry-find-bar');
+      if (cherryBar?.contains(activeEl)) {
+        cherryFind?.hide();
+      } else if (mainBar?.contains(activeEl)) {
+        mainFind?.hide();
+      } else if (cherryFind?.isActive() && cherryPaneEl.contains(activeEl)) {
+        cherryFind.hide();
+      } else if (mainFind?.isActive()) {
+        mainFind.hide();
+      }
     }
   });
 
@@ -1174,10 +1162,8 @@
       renderSelection();
     }
     persistPanelState(msg);
-    if (findActive && findQuery) {
-      currentMatchIndex = -1;
-      findNavSynced = false;
-      rebuildFindMatches();
+    if (mainFind) {
+      mainFind.onContentChanged();
     }
   }
 
@@ -1210,8 +1196,8 @@
       rebuildLayout();
     }
     renderVisibleRows(true);
-    if (findActive && currentMatchIndex >= 0) {
-      queueScrollFindMatchIntoView();
+    if (mainFind) {
+      mainFind.afterRowsRendered();
     }
     if (pendingGoToIndex >= 0) {
       const row = rowCache.get(pendingGoToIndex);
@@ -1273,195 +1259,90 @@
     vscode.postMessage({ type: 'requestRows', start: lo, end: hi, requestId });
   }
 
-  function getFindNav() {
-    return globalThis.LogFilterFindNav;
-  }
-
-  function getFindAnchor() {
-    const rowIndex = selectedIndex >= 0 ? selectedIndex : findRowAtOffset(listEl.scrollTop);
-    return { rowIndex, offset: 0 };
-  }
-
-  function resolveMatchFromAnchor(direction) {
-    const nav = getFindNav();
-    if (!nav?.resolveMatchFromAnchor) {
-      return findMatches.length ? 0 : -1;
-    }
-    return nav.resolveMatchFromAnchor(findMatches, getFindAnchor(), direction);
-  }
-
-  function computeNextFindIndex() {
-    const nav = getFindNav();
-    if (!nav?.computeNextFindIndex) {
-      return 0;
-    }
-    const current =
-      currentMatchIndex >= 0 && currentMatchIndex < findMatches.length
-        ? findMatches[currentMatchIndex]
-        : null;
-    return nav.computeNextFindIndex(findMatches, getFindAnchor(), current, selectedIndex, findNavSynced);
-  }
-
-  function computePrevFindIndex() {
-    const nav = getFindNav();
-    if (!nav?.computePrevFindIndex) {
-      return findMatches.length - 1;
-    }
-    const current =
-      currentMatchIndex >= 0 && currentMatchIndex < findMatches.length
-        ? findMatches[currentMatchIndex]
-        : null;
-    return nav.computePrevFindIndex(findMatches, getFindAnchor(), current, selectedIndex, findNavSynced);
-  }
-
-  function showFindBar() {
-    findBarEl.classList.remove('hidden');
-    findActive = true;
-    findInputEl.focus();
-    findInputEl.select();
-    if (findQuery) {
-      rebuildFindMatches();
-      scrollToCurrentMatch();
-    }
-  }
-
-  function hideFindBar() {
-    findBarEl.classList.add('hidden');
-    findActive = false;
-    findMatches = [];
-    currentMatchIndex = -1;
-    findNavSynced = false;
-    updateFindStatus();
-    renderVisibleRows(true);
-    listEl.focus();
-  }
-
-  function rebuildFindMatches() {
-    findMatches = [];
-    if (!findQuery) {
-      updateFindStatus();
-      return;
-    }
-    const requestId = ++findRequestId;
-    findStatusEl.textContent = 'Searching…';
-    vscode.postMessage({ type: 'findInResults', needle: findQuery, requestId });
-  }
-
-  function handleFindMatches(msg) {
-    if (!msg || msg.requestId !== findRequestId) {
-      return;
-    }
-    findMatches = msg.matches || [];
-    if (findMatches.length === 0) {
-      currentMatchIndex = -1;
-      findNavSynced = false;
-    } else if (currentMatchIndex < 0 || currentMatchIndex >= findMatches.length) {
-      currentMatchIndex = resolveMatchFromAnchor(1);
-      findNavSynced = false;
-    }
-    updateFindStatus();
-    if (msg.capped && findMatches.length) {
-      findStatusEl.textContent = `${currentMatchIndex + 1} of ${findMatches.length}+`;
-    }
-    scrollToCurrentMatch();
-  }
-
-  function updateFindStatus() {
-    if (!findQuery) {
-      findStatusEl.textContent = '';
-      return;
-    }
-    if (findMatches.length === 0) {
-      findStatusEl.textContent = 'No results';
-      return;
-    }
-    findStatusEl.textContent = `${currentMatchIndex + 1} of ${findMatches.length}`;
-  }
-
-  function advanceFind(delta) {
-    if (!findActive) {
-      showFindBar();
-      return;
-    }
-    if (!findQuery) {
-      findInputEl.focus();
-      return;
-    }
-    if (!findMatches.length) {
-      rebuildFindMatches();
-    }
-    if (!findMatches.length) {
-      return;
-    }
-    currentMatchIndex = delta > 0 ? computeNextFindIndex() : computePrevFindIndex();
-    findNavSynced = true;
-    updateFindStatus();
-    scrollToCurrentMatch();
-  }
-
-  function scrollToCurrentMatch() {
-    if (currentMatchIndex < 0 || !findMatches.length) {
-      renderVisibleRows(true);
-      return;
-    }
-
-    const { rowIndex } = findMatches[currentMatchIndex];
-    const rowTop = prefixOffsets[rowIndex];
-    const height = rowHeightAt(rowIndex);
-    const viewTop = listEl.scrollTop;
-    const viewBottom = viewTop + listEl.clientHeight;
-    if (rowTop < viewTop || rowTop + height > viewBottom) {
-      listEl.scrollTop = Math.max(0, rowTop - Math.floor(listEl.clientHeight / 3));
-    }
-    selectIndex(rowIndex, true);
-    findNavSynced = true;
-    renderVisibleRows(true);
-    queueScrollFindMatchIntoView();
-  }
-
-  function queueScrollFindMatchIntoView() {
-    requestAnimationFrame(() => {
-      if (scrollFindMatchIntoViewHorizontally()) {
-        return;
+  function resolveFindController() {
+    const el = document.activeElement;
+    if (el) {
+      const mainBar = document.getElementById('main-find-bar');
+      const cherryBar = document.getElementById('cherry-find-bar');
+      if (cherryBar?.contains(el) || cherryListEl.contains(el)) {
+        return cherryFind;
       }
-      requestAnimationFrame(() => scrollFindMatchIntoViewHorizontally());
-    });
+      if (mainBar?.contains(el) || listEl.contains(el)) {
+        return mainFind;
+      }
+      if (cherryExpanded && cherryPaneEl.contains(el)) {
+        return cherryFind;
+      }
+    }
+    return mainFind;
   }
 
-  function scrollFindMatchIntoViewHorizontally() {
-    if (currentMatchIndex < 0 || !findMatches.length) {
-      return false;
+  function initFindControllers() {
+    const fc = globalThis.LogFilterFindController;
+    if (!fc?.createFindController) {
+      return;
     }
 
-    const { rowIndex } = findMatches[currentMatchIndex];
-    const rowEl = rowsEl.querySelector(`.row[data-index="${rowIndex}"]`);
-    if (!rowEl) {
-      return false;
-    }
+    mainFind = fc.createFindController({
+      barEl: document.getElementById('main-find-bar'),
+      inputEl: document.getElementById('main-find-input'),
+      statusEl: document.getElementById('main-find-status'),
+      prevEl: document.getElementById('main-find-prev'),
+      nextEl: document.getElementById('main-find-next'),
+      closeEl: document.getElementById('main-find-close'),
+      listEl,
+      rowsEl,
+      getSelectedIndex: () => selectedIndex,
+      selectRow: (index, fromFind) => selectIndex(index, fromFind),
+      refreshRows: () => renderVisibleRows(true),
+      getScrollAnchorRow: () => findRowAtOffset(listEl.scrollTop),
+      scrollRowIntoView: (rowIndex) => {
+        const rowTop = prefixOffsets[rowIndex];
+        const height = rowHeightAt(rowIndex);
+        const viewTop = listEl.scrollTop;
+        const viewBottom = viewTop + listEl.clientHeight;
+        if (rowTop < viewTop || rowTop + height > viewBottom) {
+          listEl.scrollTop = Math.max(0, rowTop - Math.floor(listEl.clientHeight / 3));
+        }
+      },
+      requestMatches: (needle, requestId, cb) => {
+        mainFindCallbacks.set(requestId, cb);
+        vscode.postMessage({ type: 'findInResults', needle, requestId });
+      },
+    });
 
-    const markEl = rowEl.querySelector('mark.find-current');
-    if (!markEl) {
-      return false;
-    }
-
-    const listRect = listEl.getBoundingClientRect();
-    const markRect = markEl.getBoundingClientRect();
-    const viewWidth = listEl.clientWidth;
-    const markWidth = markRect.width;
-    let delta = 0;
-
-    if (markWidth > viewWidth) {
-      delta = markRect.left - listRect.left;
-    } else if (markRect.left < listRect.left) {
-      delta = markRect.left - listRect.left;
-    } else if (markRect.right > listRect.right) {
-      delta = markRect.right - listRect.right;
-    }
-
-    if (delta !== 0) {
-      listEl.scrollLeft = Math.max(0, listEl.scrollLeft + delta);
-    }
-    return true;
+    cherryFind = fc.createFindController({
+      barEl: document.getElementById('cherry-find-bar'),
+      inputEl: document.getElementById('cherry-find-input'),
+      statusEl: document.getElementById('cherry-find-status'),
+      prevEl: document.getElementById('cherry-find-prev'),
+      nextEl: document.getElementById('cherry-find-next'),
+      closeEl: document.getElementById('cherry-find-close'),
+      listEl: cherryListEl,
+      rowsEl: cherryRowsEl,
+      getSelectedIndex: () => cherrySelectedIndex,
+      selectRow: (index) => selectCherryIndex(index),
+      refreshRows: () => renderCherryRows(),
+      getScrollAnchorRow: () => {
+        if (cherryItems.length === 0) {
+          return 0;
+        }
+        return Math.min(cherryItems.length - 1, Math.floor(cherryListEl.scrollTop / ROW_HEIGHT));
+      },
+      scrollRowIntoView: (rowIndex) => {
+        const rowTop = rowIndex * ROW_HEIGHT;
+        const viewTop = cherryListEl.scrollTop;
+        const viewBottom = viewTop + cherryListEl.clientHeight;
+        if (rowTop < viewTop || rowTop + ROW_HEIGHT > viewBottom) {
+          cherryListEl.scrollTop = Math.max(0, rowTop - Math.floor(cherryListEl.clientHeight / 3));
+        }
+      },
+      requestMatches: (needle, requestId, cb) => {
+        void requestId;
+        const result = fc.findInTextRows(cherryItems, needle);
+        cb(result);
+      },
+    });
   }
 
   function rowLineCount(row) {
@@ -1893,8 +1774,8 @@
 
   function highlightRowText(text, rowIndex, row) {
     const ranges = collectQueryHighlightRanges(text, row);
-    if (findActive && findQuery) {
-      collectFindHighlightRanges(text, rowIndex, ranges);
+    if (mainFind) {
+      mainFind.collectHighlightRanges(text, rowIndex, ranges);
     }
     return renderHighlightRanges(text, ranges);
   }
@@ -1911,30 +1792,6 @@
       ...r,
       className: 'match-hl',
     }));
-  }
-
-  function collectFindHighlightRanges(text, rowIndex, ranges) {
-    const needle = findQuery.toLowerCase();
-    const hay = text.toLowerCase();
-    let idx = 0;
-    while (idx < hay.length) {
-      const found = hay.indexOf(needle, idx);
-      if (found === -1) {
-        break;
-      }
-      const current = findMatches[currentMatchIndex];
-      const isCurrent =
-        current &&
-        current.rowIndex === rowIndex &&
-        current.start === found &&
-        current.end === found + needle.length;
-      ranges.push({
-        start: found,
-        end: found + needle.length,
-        className: isCurrent ? 'find-hl find-current' : 'find-hl',
-      });
-      idx = found + 1;
-    }
   }
 
   function renderHighlightRanges(text, ranges) {
@@ -1978,6 +1835,7 @@
     return html;
   }
 
+  initFindControllers();
   updateQuerySyntaxHighlight();
   const restored = vscode.getState();
   if (restored?.cherryPaneWidth) {
