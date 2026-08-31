@@ -539,12 +539,166 @@ mark.find-hl.find-current {
   background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.35));
 }
 
-#results {
+#results-split {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: row;
+  position: relative;
+}
+
+#results-main {
+  flex: 1;
+  min-width: 0;
   position: relative;
   display: flex;
   flex-direction: column;
+}
+
+#cherry-toggle {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 28px;
+  padding: 8px 4px;
+  border: none;
+  border-left: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editorWidget-background);
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  font-family: var(--vscode-font-family);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+#cherry-toggle:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+#cherry-toggle:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.cherry-toggle-icon {
+  font-size: 10px;
+  line-height: 1;
+}
+
+.cherry-toggle-text {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  letter-spacing: 0.04em;
+  color: var(--vscode-descriptionForeground);
+}
+
+#cherry-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--vscode-charts-orange, #d18616);
+  font-weight: 600;
+}
+
+#cherry-resizer {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  touch-action: none;
+}
+
+#cherry-resizer.hidden {
+  display: none;
+}
+
+#cherry-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 1px;
+  background: var(--vscode-panel-border);
+}
+
+#cherry-resizer:hover::after,
+body.cherry-resizing #cherry-resizer::after {
+  background: var(--vscode-focusBorder, var(--vscode-panel-border));
+  width: 2px;
+  left: 1px;
+}
+
+body.cherry-resizing {
+  cursor: col-resize !important;
+  user-select: none;
+}
+
+body.cherry-resizing * {
+  cursor: col-resize !important;
+}
+
+#cherry-pane {
+  flex: 0 0 auto;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--vscode-editor-background);
+}
+
+#cherry-pane.hidden {
+  display: none;
+}
+
+#cherry-pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editorWidget-background);
+  font-size: 0.85em;
+  flex: 0 0 auto;
+}
+
+#cherry-pane-header button {
+  padding: 2px 8px;
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 2px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  cursor: pointer;
+  font-family: var(--vscode-font-family);
+  font-size: inherit;
+}
+
+#cherry-pane-header button:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+#cherry-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  outline: none;
+}
+
+#cherry-empty {
+  padding: 16px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+  text-align: center;
+}
+
+#cherry-empty.hidden {
+  display: none;
+}
+
+#cherry-rows {
+  min-width: 100%;
 }
 
 #filter-progress {
@@ -629,6 +783,58 @@ mark.find-hl.find-current {
 .row.selected {
   background: var(--vscode-list-activeSelectionBackground);
   color: var(--vscode-list-activeSelectionForeground);
+}
+
+.row.multi-selected {
+  background: var(--vscode-list-inactiveSelectionBackground, rgba(255, 255, 255, 0.08));
+}
+
+.row.multi-selected.selected {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.row.picked .gutter::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: var(--vscode-charts-orange, #d18616);
+  vertical-align: middle;
+}
+
+.context-menu {
+  position: fixed;
+  z-index: 200;
+  min-width: 200px;
+  padding: 4px 0;
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+.context-menu.hidden {
+  display: none;
+}
+
+.context-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  border: none;
+  background: transparent;
+  color: var(--vscode-foreground);
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+
+.context-menu-item:hover {
+  background: var(--vscode-list-hoverBackground);
 }
 
 .gutter {

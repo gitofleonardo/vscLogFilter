@@ -6,6 +6,8 @@ import { getWebviewHtml } from './webviewHtml';
 import { WorkerParser, type IndexSource } from './workerParser';
 import { inFlightFilterPercent } from '../worker/filterProgress';
 import { LOG_FILTER_PANEL_VIEW_TYPE, type LogFilterPanelState } from './panelState';
+import { CherryPickStore } from './CherryPickStore';
+import { cherryPickItemFromRow } from './cherryPickTypes';
 import { chooseParseSource } from './parseSource';
 import { goToSourceLine } from './goToSourceLine';
 import { listOpenTextTabs, type OpenTextTabInfo } from '../openTextTabs';
@@ -70,6 +72,7 @@ export class LogFilterSession {
   private workerParser: WorkerParser;
   /** Suppress reparse from syncOpenFiles during construction / first paint. */
   private allowSyncReparse = false;
+  readonly cherryStore = new CherryPickStore();
 
   constructor(
     uri: vscode.Uri,
@@ -288,6 +291,7 @@ export class LogFilterSession {
       case 'ready':
         this.pushFilesState();
         this.pushSavedQueries();
+        this.pushCherryView();
         break;
       case 'queryChange':
         this.setQuery(String(msg.query ?? ''));
@@ -325,7 +329,93 @@ export class LogFilterSession {
         break;
       case 'selectEntry':
         break;
+      case 'cherryPick':
+        void this.handleCherryPick(
+          Array.isArray(msg.indices) ? msg.indices.map(Number).filter(Number.isFinite) : [],
+        );
+        break;
+      case 'cherryUnpick':
+      case 'cherryRemove': {
+        const keys = Array.isArray(msg.keys) ? msg.keys.map(String) : [];
+        this.handleCherryUnpick(keys);
+        break;
+      }
+      case 'cherryClear':
+        this.clearCherryPicks();
+        break;
+      case 'copyText':
+        void vscode.env.clipboard.writeText(String(msg.text ?? ''));
+        break;
     }
+  }
+
+  private pushCherryView(opts?: { expand?: boolean }): void {
+    void this.panel.webview.postMessage({
+      type: 'cherryUpdate',
+      pickedKeys: this.cherryStore.pickedKeys(),
+      count: this.cherryStore.count(),
+      items: this.cherryStore.listSorted(),
+      highlightTerms: extractHighlightTerms(this.query),
+      expand: opts?.expand === true,
+    });
+  }
+
+  private async handleCherryPick(indices: number[]): Promise<void> {
+    if (!indices.length || !this.workerParser.isIndexed) {
+      return;
+    }
+    const unique = [...new Set(indices)].filter((i) => i >= 0).sort((a, b) => a - b);
+    let added = 0;
+    let duplicates = 0;
+    const primary = this.primaryUriString();
+
+    for (const idx of unique) {
+      try {
+        const rows = await this.workerParser.getRows(idx, idx + 1);
+        const row = rows[0];
+        if (!row) {
+          continue;
+        }
+        const item = cherryPickItemFromRow(row, primary);
+        if (this.cherryStore.add(item)) {
+          added++;
+        } else {
+          duplicates++;
+        }
+      } catch (err) {
+        logError('cherryPick getRows failed', err);
+      }
+    }
+
+    if (added === 0 && duplicates > 0) {
+      void vscode.window.showInformationMessage('Already in Cherry View.');
+    }
+
+    if (added > 0) {
+      this.pushCherryView({ expand: true });
+    } else {
+      this.pushCherryView();
+    }
+  }
+
+  private handleCherryUnpick(keys: string[]): void {
+    if (!keys.length) {
+      return;
+    }
+    this.cherryStore.removeMany(keys);
+    this.pushCherryView();
+  }
+
+  private clearCherryPicks(): void {
+    if (this.cherryStore.count() === 0) {
+      return;
+    }
+    this.cherryStore.clear();
+    this.pushCherryView();
+  }
+
+  private disposeCherry(): void {
+    this.cherryStore.clear();
   }
 
   private scheduleFilter(): void {
@@ -694,6 +784,7 @@ export class LogFilterSession {
       highlightTerms,
       maxLineNumber: this.filterMaxLineNumber,
     });
+    this.pushCherryView();
   }
 
   private async goToSource(line: number, sourceUri?: string): Promise<void> {
@@ -719,6 +810,7 @@ export class LogFilterSession {
       clearTimeout(this.queryTimer);
     }
     this.workerParser.dispose();
+    this.disposeCherry();
     vscode.Disposable.from(...this.disposables).dispose();
   }
 

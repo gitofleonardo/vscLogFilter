@@ -32,9 +32,23 @@
   const savedSearchEl = document.getElementById('saved-search');
   const savedAddEl = document.getElementById('saved-add');
   const savedListEl = document.getElementById('saved-list');
+  const cherryToggleEl = document.getElementById('cherry-toggle');
+  const cherryResizerEl = document.getElementById('cherry-resizer');
+  const cherryCountEl = document.getElementById('cherry-count');
+  const cherryPaneEl = document.getElementById('cherry-pane');
+  const cherryStatsEl = document.getElementById('cherry-stats');
+  const cherryClearEl = document.getElementById('cherry-clear');
+  const cherryListEl = document.getElementById('cherry-list');
+  const cherryEmptyEl = document.getElementById('cherry-empty');
+  const cherryRowsEl = document.getElementById('cherry-rows');
+  const resultsSplitEl = document.getElementById('results-split');
+  const contextMenuEl = document.getElementById('context-menu');
 
   const ROW_HEIGHT = 19;
   const BUFFER = 40;
+  const CHERRY_PANE_MIN = 180;
+  const CHERRY_MAIN_MIN = 240;
+  const CHERRY_PANE_DEFAULT_RATIO = 0.38;
 
   function decodeUriBasename(uri) {
     const withoutQuery = String(uri || '').split(/[?#]/, 1)[0];
@@ -103,6 +117,16 @@
   let findRequestId = 0;
   let filterEpoch = 0;
   let pendingGoToIndex = -1;
+  let pickedKeys = new Set();
+  let cherryCount = 0;
+  let multiSelectedIndices = new Set();
+  let selectionAnchor = -1;
+  let contextMenuRowIndex = -1;
+  let cherryExpanded = false;
+  let cherryPaneWidth = null;
+  let cherryItems = [];
+  let cherrySelectedIndex = -1;
+  let contextMenuKind = '';
 
   function formatCount(n) {
     if (n >= 1_000_000) {
@@ -222,6 +246,8 @@
       handleSavedQueriesState(msg);
     } else if (msg.type === 'filterProgress') {
       setFilterProgressPercent(msg.percent);
+    } else if (msg.type === 'cherryUpdate') {
+      handleCherryUpdate(msg);
     } else if (msg.type === 'showFind') {
       showFindBar();
     } else if (msg.type === 'findNext') {
@@ -229,6 +255,362 @@
     } else if (msg.type === 'findPrevious') {
       advanceFind(-1);
     }
+  });
+
+  function setCherryExpanded(expanded, persist = true) {
+    cherryExpanded = expanded;
+    resultsSplitEl.classList.toggle('cherry-expanded', expanded);
+    cherryPaneEl.classList.toggle('hidden', !expanded);
+    cherryResizerEl.classList.toggle('hidden', !expanded);
+    cherryPaneEl.setAttribute('aria-hidden', expanded ? 'false' : 'true');
+    cherryToggleEl.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    cherryToggleEl.querySelector('.cherry-toggle-icon').textContent = expanded ? '◀' : '▶';
+    if (expanded) {
+      const prev = vscode.getState() || {};
+      applyCherryPaneWidth(prev.cherryPaneWidth ?? cherryPaneWidth ?? defaultCherryPaneWidth(), false);
+    }
+    if (persist) {
+      const prev = vscode.getState() || {};
+      vscode.setState({ ...prev, cherryExpanded: expanded, cherryPaneWidth: cherryPaneWidth ?? prev.cherryPaneWidth });
+    }
+  }
+
+  function getCherryWidthLimits() {
+    const total = resultsSplitEl.clientWidth;
+    const chrome = cherryToggleEl.offsetWidth + cherryResizerEl.offsetWidth;
+    const max = Math.max(CHERRY_PANE_MIN, total - chrome - CHERRY_MAIN_MIN);
+    return { min: CHERRY_PANE_MIN, max };
+  }
+
+  function defaultCherryPaneWidth() {
+    const total = resultsSplitEl.clientWidth;
+    const chrome = cherryToggleEl.offsetWidth + cherryResizerEl.offsetWidth;
+    return Math.round(Math.max(CHERRY_PANE_MIN, (total - chrome) * CHERRY_PANE_DEFAULT_RATIO));
+  }
+
+  function applyCherryPaneWidth(widthPx, persist = true) {
+    if (!cherryExpanded) {
+      return;
+    }
+    const { min, max } = getCherryWidthLimits();
+    const w = Math.max(min, Math.min(Math.round(widthPx), max));
+    cherryPaneWidth = w;
+    cherryPaneEl.style.flex = '0 0 auto';
+    cherryPaneEl.style.width = `${w}px`;
+    if (persist) {
+      const prev = vscode.getState() || {};
+      vscode.setState({ ...prev, cherryPaneWidth: w });
+    }
+  }
+
+  function startCherryResize(e) {
+    if (!cherryExpanded) {
+      return;
+    }
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = cherryPaneEl.offsetWidth;
+    document.body.classList.add('cherry-resizing');
+
+    function onMove(ev) {
+      const delta = startX - ev.clientX;
+      applyCherryPaneWidth(startWidth + delta, false);
+    }
+
+    function onUp() {
+      applyCherryPaneWidth(cherryPaneWidth ?? startWidth, true);
+      document.body.classList.remove('cherry-resizing');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+
+  cherryResizerEl.addEventListener('mousedown', startCherryResize);
+
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(() => {
+      if (cherryExpanded && cherryPaneWidth != null) {
+        applyCherryPaneWidth(cherryPaneWidth, false);
+      }
+    }).observe(resultsSplitEl);
+  }
+
+  function toggleCherryPane() {
+    setCherryExpanded(!cherryExpanded);
+  }
+
+  function handleCherryUpdate(msg) {
+    cherryCount = Number(msg.count) || 0;
+    pickedKeys = new Set(Array.isArray(msg.pickedKeys) ? msg.pickedKeys : []);
+    cherryItems = Array.isArray(msg.items) ? msg.items.slice() : [];
+    cherryCountEl.textContent = String(cherryCount);
+    cherryStatsEl.textContent = cherryCount === 1 ? '1 line' : `${cherryCount} lines`;
+    cherryEmptyEl.classList.toggle('hidden', cherryItems.length > 0);
+    if (cherrySelectedIndex >= cherryItems.length) {
+      cherrySelectedIndex = cherryItems.length > 0 ? cherryItems.length - 1 : -1;
+    }
+    renderCherryRows();
+    renderSelection();
+    if (msg.expand === true) {
+      setCherryExpanded(true);
+    }
+  }
+
+  function renderCherryRows() {
+    const fragment = document.createDocumentFragment();
+    for (let i = 0; i < cherryItems.length; i++) {
+      const item = cherryItems[i];
+      const el = document.createElement('div');
+      el.className = 'row' + (i === cherrySelectedIndex ? ' selected' : '');
+      el.dataset.index = String(i);
+      el.dataset.key = item.key;
+      el.style.height = `${ROW_HEIGHT}px`;
+
+      const lineNo = item.lineNumber + 1;
+      const text = item.fullText || '';
+      const prefixHtml = item.fileName
+        ? `<span class="file-prefix">${escapeHtml(item.fileName)}:</span>`
+        : '';
+
+      el.innerHTML =
+        `<span class="gutter">${lineNo}</span>` +
+        `<pre class="line-text">${prefixHtml}${highlightCherryText(text, item)}</pre>`;
+
+      el.addEventListener('click', () => selectCherryIndex(i));
+      el.addEventListener('dblclick', () => goToCherryItem(item));
+      el.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        selectCherryIndex(i);
+        showCherryContextMenu(e.clientX, e.clientY, item.key);
+      });
+
+      fragment.appendChild(el);
+    }
+    cherryRowsEl.replaceChildren(fragment);
+  }
+
+  function selectCherryIndex(index) {
+    cherrySelectedIndex = index;
+    const rows = cherryRowsEl.querySelectorAll('.row');
+    rows.forEach((el) => {
+      const idx = parseInt(el.dataset.index || '-1', 10);
+      el.classList.toggle('selected', idx === cherrySelectedIndex);
+    });
+    if (index >= 0) {
+      rows[index]?.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  function goToCherryItem(item) {
+    vscode.postMessage({
+      type: 'goToSource',
+      line: item.lineNumber,
+      sourceUri: item.sourceUri,
+    });
+  }
+
+  function showCherryContextMenu(x, y, key) {
+    contextMenuKind = 'cherry';
+    contextMenuEl.replaceChildren();
+    addContextMenuItem('Remove from Cherry', () => {
+      vscode.postMessage({ type: 'cherryRemove', keys: [key] });
+    });
+    addContextMenuItem('Go to Source', () => {
+      const item = cherryItems.find((it) => it.key === key);
+      if (item) {
+        goToCherryItem(item);
+      }
+    });
+    addContextMenuItem('Copy Line', () => {
+      const item = cherryItems.find((it) => it.key === key);
+      if (item) {
+        void copyCherryText(item.fullText);
+      }
+    });
+    contextMenuEl.classList.remove('hidden');
+    contextMenuEl.style.left = `${x}px`;
+    contextMenuEl.style.top = `${y}px`;
+  }
+
+  async function copyCherryText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      vscode.postMessage({ type: 'copyText', text });
+    }
+  }
+
+  function highlightCherryText(text, row) {
+    if (!text || !highlightTerms.length) {
+      return escapeHtml(text);
+    }
+    const hl = globalThis.LogFilterHighlights;
+    if (!hl?.collectHighlightRanges) {
+      return escapeHtml(text);
+    }
+    const ranges = hl.collectHighlightRanges(text, highlightTerms, row ?? {}).map((r) => ({
+      ...r,
+      className: 'match-hl',
+    }));
+    return renderHighlightRanges(text, ranges);
+  }
+
+  function rowPickKey(row) {
+    if (!row) {
+      return '';
+    }
+    const uri = row.sourceUri || primaryUri;
+    return `${uri}#${row.lineNumber}`;
+  }
+
+  function isRowPicked(index) {
+    const row = rowCache.get(index);
+    if (!row) {
+      return false;
+    }
+    return pickedKeys.has(rowPickKey(row));
+  }
+
+  function clearMultiSelect() {
+    multiSelectedIndices.clear();
+    selectionAnchor = -1;
+  }
+
+  function setMultiSelect(indices) {
+    multiSelectedIndices = new Set(indices);
+    renderVisibleRows();
+  }
+
+  function handleRowClick(index, event) {
+    const ctrlOrMeta = event.ctrlKey || event.metaKey;
+    const shift = event.shiftKey;
+
+    if (shift && selectionAnchor >= 0) {
+      const lo = Math.min(selectionAnchor, index);
+      const hi = Math.max(selectionAnchor, index);
+      const next = new Set(multiSelectedIndices);
+      for (let i = lo; i <= hi; i++) {
+        next.add(i);
+      }
+      multiSelectedIndices = next;
+      selectIndex(index);
+      renderVisibleRows();
+      return;
+    }
+
+    if (ctrlOrMeta) {
+      const next = new Set(multiSelectedIndices);
+      if (next.has(index)) {
+        next.delete(index);
+      } else {
+        next.add(index);
+      }
+      multiSelectedIndices = next;
+      selectionAnchor = index;
+      selectIndex(index);
+      renderVisibleRows();
+      return;
+    }
+
+    clearMultiSelect();
+    selectionAnchor = index;
+    selectIndex(index);
+  }
+
+  function pickIndices(indices) {
+    const list = [...indices].filter((i) => i >= 0 && i < matchCount);
+    if (!list.length) {
+      return;
+    }
+    vscode.postMessage({ type: 'cherryPick', indices: list });
+  }
+
+  function unpickIndices(indices) {
+    const keys = [];
+    for (const index of indices) {
+      const row = rowCache.get(index);
+      if (row) {
+        keys.push(rowPickKey(row));
+        continue;
+      }
+      const el = rowsEl.querySelector(`.row[data-index="${index}"]`);
+      if (el?.dataset.sourceUri && el.dataset.lineNumber !== undefined) {
+        keys.push(`${el.dataset.sourceUri}#${el.dataset.lineNumber}`);
+      }
+    }
+    if (keys.length) {
+      vscode.postMessage({ type: 'cherryUnpick', keys });
+    }
+  }
+
+  function hideContextMenu() {
+    contextMenuEl.classList.add('hidden');
+    contextMenuRowIndex = -1;
+  }
+
+  function addContextMenuItem(label, action) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'context-menu-item';
+    btn.textContent = label;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      hideContextMenu();
+      action();
+    });
+    contextMenuEl.appendChild(btn);
+  }
+
+  function showResultsContextMenu(x, y, rowIndex) {
+    contextMenuKind = 'results';
+    contextMenuRowIndex = rowIndex;
+    contextMenuEl.replaceChildren();
+
+    const multiCount = multiSelectedIndices.size;
+    const useMulti = multiCount > 1 && multiSelectedIndices.has(rowIndex);
+
+    if (useMulti) {
+      addContextMenuItem(`Pick ${multiCount} lines to Cherry View`, () => {
+        pickIndices(multiSelectedIndices);
+      });
+    } else {
+      const picked = isRowPicked(rowIndex);
+      if (picked) {
+        addContextMenuItem('Remove from Cherry View', () => {
+          unpickIndices([rowIndex]);
+        });
+      } else {
+        addContextMenuItem('Pick to Cherry View', () => {
+          pickIndices([rowIndex]);
+        });
+      }
+      addContextMenuItem('Go to Source', () => {
+        selectIndex(rowIndex);
+        goToSelected();
+      });
+    }
+
+    contextMenuEl.classList.remove('hidden');
+    contextMenuEl.style.left = `${x}px`;
+    contextMenuEl.style.top = `${y}px`;
+  }
+
+  function hideContextMenu() {
+    contextMenuEl.classList.add('hidden');
+    contextMenuRowIndex = -1;
+    contextMenuKind = '';
+  }
+
+  cherryToggleEl.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleCherryPane();
+  });
+
+  cherryClearEl.addEventListener('click', () => {
+    vscode.postMessage({ type: 'cherryClear' });
   });
 
   function setFilesMenuOpen(open) {
@@ -341,6 +723,7 @@
     if (savedMenuOpen && !savedDropdownEl.contains(e.target)) {
       setSavedMenuOpen(false);
     }
+    hideContextMenu();
   });
 
   document.addEventListener('keydown', (e) => {
@@ -722,6 +1105,7 @@
       pendingRowRequest = null;
       listEl.scrollTop = 0;
       listEl.scrollLeft = 0;
+      clearMultiSelect();
     }
 
     matchCount = nextMatchCount;
@@ -1176,9 +1560,23 @@
       const row = rowCache.get(id);
 
       const el = document.createElement('div');
-      el.className = 'row' + (i === selectedIndex ? ' selected' : '');
+      let rowClass = 'row';
+      if (i === selectedIndex) {
+        rowClass += ' selected';
+      }
+      if (multiSelectedIndices.has(i)) {
+        rowClass += ' multi-selected';
+      }
+      if (row && pickedKeys.has(rowPickKey(row))) {
+        rowClass += ' picked';
+      }
+      el.className = rowClass;
       el.dataset.index = String(i);
       el.dataset.line = row ? String(row.lineNumber) : '';
+      if (row) {
+        el.dataset.sourceUri = row.sourceUri || primaryUri;
+        el.dataset.lineNumber = String(row.lineNumber);
+      }
       el.style.height = `${rowHeightAt(i)}px`;
 
       if (!row) {
@@ -1197,10 +1595,27 @@
           `<span class="gutter">${lineNo}</span>` +
           `<pre class="line-text">${prefixHtml}${highlightRowText(text, i, row)}</pre>`;
 
-        el.addEventListener('click', () => selectIndex(i));
-        el.addEventListener('dblclick', () => {
+        el.addEventListener('click', (e) => handleRowClick(i, e));
+        el.addEventListener('dblclick', (e) => {
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            selectIndex(i);
+            pickIndices([i]);
+            return;
+          }
           selectIndex(i);
           goToSelected();
+        });
+        el.addEventListener('contextmenu', (e) => {
+          e.preventDefault();
+          if (multiSelectedIndices.size <= 1 || !multiSelectedIndices.has(i)) {
+            clearMultiSelect();
+            selectionAnchor = i;
+            selectIndex(i);
+          } else {
+            selectIndex(i);
+          }
+          showResultsContextMenu(e.clientX, e.clientY, i);
         });
       }
 
@@ -1230,6 +1645,9 @@
     rows.forEach((el) => {
       const idx = parseInt(el.dataset.index || '-1', 10);
       el.classList.toggle('selected', idx === selectedIndex);
+      el.classList.toggle('multi-selected', multiSelectedIndices.has(idx));
+      const row = rowCache.get(idx);
+      el.classList.toggle('picked', row ? pickedKeys.has(rowPickKey(row)) : false);
     });
   }
 
@@ -1547,5 +1965,12 @@
   }
 
   updateQuerySyntaxHighlight();
+  const restored = vscode.getState();
+  if (restored?.cherryPaneWidth) {
+    cherryPaneWidth = restored.cherryPaneWidth;
+  }
+  if (restored?.cherryExpanded) {
+    setCherryExpanded(true, false);
+  }
   vscode.postMessage({ type: 'ready' });
 })();

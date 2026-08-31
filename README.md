@@ -12,6 +12,7 @@ Android Studio Logcat-style log filtering for VS Code. Run **Log Filter: Open** 
 - **Virtual scrolling** for large result sets
 - **Double-click / Enter** to jump to source line
 - **Saved queries**: reuse common filter text from the Saved button next to the query box
+- **Cherry View**: pick filtered log lines into an embedded side pane (Ctrl/Cmd+Click or Shift+Click to multi-select, then right-click to pick); toggle with the **Cherry** button on the right
 - **Auto-reveal** filter tab when switching between open files
 - **Large files**: reads the editor buffer when VS Code exposes it; otherwise streams from disk via Worker; optional size confirmation (see Settings)
 
@@ -21,6 +22,7 @@ Android Studio Logcat-style log filtering for VS Code. Run **Log Filter: Open** 
 2. Type a filter query in the filter panel
 3. Click **Saved** to store the current query or search previous ones; double-click an item to apply it
 4. Double-click a row to jump to the corresponding line in the source editor
+5. **Cherry View**: right-click a result row (or multi-select with Ctrl/Cmd+Click / Shift+Click) and choose **Pick to Cherry View**; use the **Cherry** toggle on the right edge to expand or collapse the picked list
 
 ## Example
 

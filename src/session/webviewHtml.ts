@@ -60,14 +60,32 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     <button id="find-next" type="button" title="Next match (F3)">↓</button>
     <button id="find-close" type="button" title="Close (Escape)">×</button>
   </div>
-  <div id="results">
-    <div id="filter-progress" class="hidden" role="progressbar" aria-label="Filtering" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-hidden="true">
-      <div id="filter-progress-fill"></div>
+  <div id="results-split">
+    <div id="results-main">
+      <div id="filter-progress" class="hidden" role="progressbar" aria-label="Filtering" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-hidden="true">
+        <div id="filter-progress-fill"></div>
+      </div>
+      <div id="list" tabindex="0">
+        <div id="empty-state">Enter a filter query to show matching log lines</div>
+        <div id="scroll-content">
+          <div id="rows"></div>
+        </div>
+      </div>
     </div>
-    <div id="list" tabindex="0">
-      <div id="empty-state">Enter a filter query to show matching log lines</div>
-      <div id="scroll-content">
-        <div id="rows"></div>
+    <button id="cherry-toggle" type="button" aria-expanded="false" aria-controls="cherry-pane" title="Toggle Cherry View">
+      <span class="cherry-toggle-icon">◀</span>
+      <span class="cherry-toggle-text">Cherry</span>
+      <span id="cherry-count">0</span>
+    </button>
+    <div id="cherry-resizer" class="hidden" role="separator" aria-orientation="vertical" aria-label="Resize Cherry pane" title="Drag to resize"></div>
+    <div id="cherry-pane" class="hidden" aria-hidden="true">
+      <div id="cherry-pane-header">
+        <span id="cherry-stats">0 lines</span>
+        <button id="cherry-clear" type="button">Clear All</button>
+      </div>
+      <div id="cherry-list" tabindex="0">
+        <div id="cherry-empty">No picked lines yet</div>
+        <div id="cherry-rows"></div>
       </div>
     </div>
   </div>
@@ -75,6 +93,7 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     <span id="filename"></span>
     <span id="warnings"></span>
   </div>
+  <div id="context-menu" class="context-menu hidden" role="menu"></div>
   <script nonce="${nonce}" src="${highlightScriptUri}"></script>
   <script nonce="${nonce}" src="${findNavScriptUri}"></script>
   <script nonce="${nonce}" src="${scriptUri}"></script>
