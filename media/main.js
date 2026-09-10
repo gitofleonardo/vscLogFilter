@@ -94,7 +94,10 @@
   let suggestionActive = -1;
   let primaryUri = '';
   let selectedUris = [];
+  let fileOrder = [];
   let openFiles = [];
+  let filesDragUri = null;
+  let filesDropInsertIndex = -1;
   let selectedFileCount = 1;
   let filesMenuOpen = false;
   let savedMenuOpen = false;
@@ -628,6 +631,7 @@
   function handleFilesState(msg) {
     primaryUri = msg.primaryUri || '';
     selectedUris = Array.isArray(msg.selectedUris) ? msg.selectedUris.slice() : [];
+    fileOrder = Array.isArray(msg.fileOrder) ? msg.fileOrder.slice() : [];
     openFiles = Array.isArray(msg.openFiles) ? msg.openFiles.slice() : [];
     selectedFileCount = selectedUris.length || 1;
     filesCountEl.textContent = `(${selectedFileCount})`;
@@ -638,37 +642,77 @@
         ...prev,
         sourceUri: prev.sourceUri || primaryUri,
         selectedUris,
+        fileOrder,
       });
     }
+  }
+
+  function getOrderedFilesForMenu() {
+    const byUri = new Map(openFiles.map((f) => [f.uri, f]));
+    const ordered = [];
+    const seen = new Set();
+
+    const pushFile = (uri) => {
+      if (!uri || seen.has(uri)) {
+        return;
+      }
+      const file = byUri.get(uri) || {
+        uri,
+        fileName: decodeUriBasename(uri),
+      };
+      seen.add(uri);
+      ordered.push(file);
+    };
+
+    for (const uri of fileOrder) {
+      pushFile(uri);
+    }
+    for (const file of openFiles) {
+      pushFile(file.uri);
+    }
+    if (primaryUri) {
+      pushFile(primaryUri);
+    }
+    return ordered;
+  }
+
+  function clearFilesDropTargets() {
+    filesMenuEl.querySelectorAll('.files-item').forEach((el) => {
+      el.classList.remove('files-item-drop-before', 'files-item-drop-after', 'files-item-dragging');
+    });
+  }
+
+  function selectedUrisFromFileOrder(checkedSet) {
+    const next = fileOrder.filter((u) => checkedSet.has(u));
+    for (const u of selectedUris) {
+      if (checkedSet.has(u) && !next.includes(u)) {
+        next.push(u);
+      }
+    }
+    return next;
   }
 
   function renderFilesMenu() {
     const fragment = document.createDocumentFragment();
     const selectedSet = new Set(selectedUris);
+    const ordered = getOrderedFilesForMenu();
 
-    // Keep primary first in the menu when present.
-    const ordered = [];
-    const seen = new Set();
-    if (primaryUri) {
-      const primary = openFiles.find((f) => f.uri === primaryUri) || {
-        uri: primaryUri,
-        fileName: decodeUriBasename(primaryUri),
-      };
-      ordered.push(primary);
-      seen.add(primaryUri);
-    }
-    for (const file of openFiles) {
-      if (!seen.has(file.uri)) {
-        ordered.push(file);
-        seen.add(file.uri);
-      }
-    }
-
-    for (const file of ordered) {
+    ordered.forEach((file, index) => {
       const locked = file.uri === primaryUri;
-      const item = document.createElement('label');
+      const item = document.createElement('div');
       item.className = 'files-item' + (locked ? ' locked' : '');
       item.title = file.uri;
+      item.dataset.uri = file.uri;
+
+      const handle = document.createElement('span');
+      handle.className = 'files-drag-handle';
+      handle.setAttribute('draggable', 'true');
+      handle.setAttribute('aria-hidden', 'true');
+      handle.title = 'Drag to reorder';
+      handle.textContent = '⋮⋮';
+
+      const labelWrap = document.createElement('label');
+      labelWrap.className = 'files-item-label-wrap';
 
       const checkbox = document.createElement('input');
       checkbox.type = 'checkbox';
@@ -678,16 +722,19 @@
 
       if (!locked) {
         checkbox.addEventListener('change', () => {
-          const next = new Set(selectedUris);
+          const nextSet = new Set(selectedUris);
           if (checkbox.checked) {
-            next.add(file.uri);
+            nextSet.add(file.uri);
           } else {
-            next.delete(file.uri);
+            nextSet.delete(file.uri);
           }
           if (primaryUri) {
-            next.add(primaryUri);
+            nextSet.add(primaryUri);
           }
-          vscode.postMessage({ type: 'filesSelectionChange', uris: [...next] });
+          vscode.postMessage({
+            type: 'filesSelectionChange',
+            uris: selectedUrisFromFileOrder(nextSet),
+          });
         });
       }
 
@@ -695,10 +742,64 @@
       label.className = 'files-item-label';
       label.textContent = file.fileName || file.uri;
 
-      item.appendChild(checkbox);
-      item.appendChild(label);
+      labelWrap.appendChild(checkbox);
+      labelWrap.appendChild(label);
+      item.appendChild(handle);
+      item.appendChild(labelWrap);
+
+      handle.addEventListener('dragstart', (e) => {
+        filesDragUri = file.uri;
+        filesDropInsertIndex = -1;
+        item.classList.add('files-item-dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', file.uri);
+      });
+
+      handle.addEventListener('dragend', () => {
+        clearFilesDropTargets();
+        if (filesDragUri && filesDropInsertIndex >= 0) {
+          const uris = ordered.map((f) => f.uri);
+          const from = uris.indexOf(filesDragUri);
+          if (from >= 0) {
+            let insert = filesDropInsertIndex;
+            const next = uris.slice();
+            next.splice(from, 1);
+            if (from < insert) {
+              insert -= 1;
+            }
+            next.splice(insert, 0, filesDragUri);
+            const changed =
+              next.length !== fileOrder.length || next.some((u, i) => u !== fileOrder[i]);
+            if (changed) {
+              fileOrder = next;
+              vscode.postMessage({ type: 'filesOrderChange', order: next });
+            }
+          }
+        }
+        filesDragUri = null;
+        filesDropInsertIndex = -1;
+      });
+
+      item.addEventListener('dragover', (e) => {
+        if (!filesDragUri || filesDragUri === file.uri) {
+          return;
+        }
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        const rect = item.getBoundingClientRect();
+        const before = e.clientY < rect.top + rect.height / 2;
+        filesDropInsertIndex = before ? index : index + 1;
+        clearFilesDropTargets();
+        item.classList.add(before ? 'files-item-drop-before' : 'files-item-drop-after');
+        item.classList.remove('files-item-dragging');
+        if (filesDragUri) {
+          const dragging = filesMenuEl.querySelector(`[data-uri="${CSS.escape(filesDragUri)}"]`);
+          dragging?.classList.add('files-item-dragging');
+        }
+      });
+
       fragment.appendChild(item);
-    }
+    });
 
     if (ordered.length === 0) {
       const empty = document.createElement('div');

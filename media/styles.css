@@ -83,10 +83,10 @@ body {
 .files-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   padding: 4px 10px;
-  cursor: pointer;
   font-size: 0.9em;
+  position: relative;
 }
 
 .files-item:hover {
@@ -94,8 +94,57 @@ body {
 }
 
 .files-item.locked {
-  cursor: default;
   opacity: 0.9;
+}
+
+.files-item-label-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.files-drag-handle {
+  flex: 0 0 auto;
+  width: 14px;
+  color: var(--vscode-descriptionForeground);
+  cursor: grab;
+  user-select: none;
+  font-size: 0.75em;
+  line-height: 1;
+  letter-spacing: -2px;
+  text-align: center;
+  opacity: 0.65;
+}
+
+.files-drag-handle:hover {
+  opacity: 1;
+  color: var(--vscode-foreground);
+}
+
+.files-item-dragging {
+  opacity: 0.45;
+}
+
+.files-item-drop-before::before,
+.files-item-drop-after::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  background: var(--vscode-focusBorder);
+  pointer-events: none;
+}
+
+.files-item-drop-before::before {
+  top: 0;
+}
+
+.files-item-drop-after::after {
+  bottom: 0;
 }
 
 .files-item input {

@@ -6,4 +6,6 @@ export interface LogFilterPanelState {
   query: string;
   /** Extra search-scope URIs (primary is always sourceUri). */
   selectedUris?: string[];
+  /** User-defined order of all open files in the Files menu. */
+  fileOrder?: string[];
 }

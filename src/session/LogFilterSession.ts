@@ -14,6 +14,12 @@ import { listOpenTextTabs, type OpenTextTabInfo } from '../openTextTabs';
 import { shortFileNameFromFsPath, shortFileNameFromUriString } from '../uriUtils';
 import { logError, logInfo } from '../logChannel';
 import { SavedQueriesStore, type SavedQueriesAccess } from './savedQueries';
+import {
+  arraysEqual,
+  mergeFileOrder,
+  normalizePreferredSelected,
+  selectedUrisInFileOrder,
+} from './fileOrder';
 
 export { LOG_FILTER_PANEL_VIEW_TYPE };
 
@@ -29,19 +35,6 @@ function shortFileName(uriString: string): string {
   }
 }
 
-function normalizeSelectedUris(primary: string, uris: unknown): string[] {
-  const next = [primary];
-  if (!Array.isArray(uris)) {
-    return next;
-  }
-  for (const u of uris) {
-    if (typeof u === 'string' && u && u !== primary && !next.includes(u)) {
-      next.push(u);
-    }
-  }
-  return next;
-}
-
 export class LogFilterSession {
   readonly uri: vscode.Uri;
   panel: vscode.WebviewPanel;
@@ -49,6 +42,8 @@ export class LogFilterSession {
   query = '';
   /** Always includes primary `uri`; extras are optional open tabs. */
   selectedUris: string[] = [];
+  /** User-defined order of all open files in the Files menu. */
+  fileOrder: string[] = [];
   entries: LogEntry[] = [];
   filteredIds: number[] = [];
   parseState: 'idle' | 'parsing' | 'ready' | 'error' | 'filtering' = 'idle';
@@ -83,6 +78,7 @@ export class LogFilterSession {
     private onPersist?: () => void,
     initialQuery = '',
     initialSelectedUris: string[] = [],
+    initialFileOrder: string[] = [],
     private savedQueriesAccess?: SavedQueriesAccess,
     private onSavedQueriesChanged?: (queries: string[]) => void,
   ) {
@@ -92,7 +88,8 @@ export class LogFilterSession {
     this.query = initialQuery;
     const primary = uri.toString();
     this.selectedUris = [primary];
-    this.preferredSelectedUris = normalizeSelectedUris(primary, initialSelectedUris);
+    this.fileOrder = initialFileOrder.slice();
+    this.preferredSelectedUris = normalizePreferredSelected(primary, initialSelectedUris);
     this.workerParser = new WorkerParser(context.extensionPath);
 
     panel.webview.html = getWebviewHtml(panel.webview, extensionUri);
@@ -193,22 +190,22 @@ export class LogFilterSession {
       this.openFiles = ordered;
 
       const openSet = new Set(ordered.map((f) => f.uri));
-      const candidates = new Set([...this.selectedUris, ...this.preferredSelectedUris]);
-      const next = [primary];
-      for (const u of candidates) {
-        if (u !== primary && openSet.has(u) && !next.includes(u)) {
-          next.push(u);
-        }
-      }
+      const openUris = ordered.map((f) => f.uri);
+      const nextFileOrder = mergeFileOrder(this.fileOrder, openUris, primary);
+      const fileOrderChanged = !arraysEqual(nextFileOrder, this.fileOrder);
+      this.fileOrder = nextFileOrder;
+
+      const candidates = [...this.selectedUris, ...this.preferredSelectedUris];
+      const next = selectedUrisInFileOrder(nextFileOrder, candidates, primary, openSet);
 
       const selectionChanged =
         next.length !== this.selectedUris.length ||
         next.some((u, i) => u !== this.selectedUris[i]);
       this.selectedUris = next;
       this.pushFilesState();
-      if (selectionChanged) {
+      if (selectionChanged || fileOrderChanged) {
         this.persist();
-        if (this.allowSyncReparse) {
+        if (selectionChanged && this.allowSyncReparse) {
           this.scheduleReparse();
         }
       }
@@ -220,17 +217,8 @@ export class LogFilterSession {
   setSelectedUris(uris: string[]): void {
     const primary = this.primaryUriString();
     const openSet = new Set(this.openFiles.map((f) => f.uri));
-    const next = [primary];
-    for (const u of uris) {
-      if (u === primary || next.includes(u)) {
-        continue;
-      }
-      // Only open tabs can be added; closed/missing tabs are ignored.
-      if (openSet.has(u)) {
-        next.push(u);
-      }
-    }
-    this.preferredSelectedUris = this.preferredSelectedUris.filter((u) => next.includes(u));
+    const next = selectedUrisInFileOrder(this.fileOrder, uris, primary, openSet);
+    this.preferredSelectedUris = next.filter((u) => u !== primary);
     const changed =
       next.length !== this.selectedUris.length ||
       next.some((u, i) => u !== this.selectedUris[i]);
@@ -242,6 +230,35 @@ export class LogFilterSession {
     this.pushFilesState();
     this.persist();
     this.scheduleReparse();
+  }
+
+  setFileOrder(order: string[]): void {
+    const primary = this.primaryUriString();
+    const openUris = this.openFiles.map((f) => f.uri);
+    const openSet = new Set(openUris);
+    const nextOrder = mergeFileOrder(order, openUris, primary);
+    const selectedSet = new Set(this.selectedUris);
+    selectedSet.add(primary);
+    const nextSelected = selectedUrisInFileOrder(
+      nextOrder,
+      [...selectedSet],
+      primary,
+      openSet,
+    );
+
+    const orderChanged = !arraysEqual(nextOrder, this.fileOrder);
+    const selectionOrderChanged = !arraysEqual(nextSelected, this.selectedUris);
+
+    this.fileOrder = nextOrder;
+    this.selectedUris = nextSelected;
+    this.pushFilesState();
+
+    if (orderChanged || selectionOrderChanged) {
+      this.persist();
+    }
+    if (selectionOrderChanged) {
+      this.scheduleReparse();
+    }
   }
 
   /** Remove an extra selected URI (no-op for primary). Returns whether selection changed. */
@@ -274,6 +291,7 @@ export class LogFilterSession {
       type: 'filesState',
       primaryUri: this.primaryUriString(),
       selectedUris: this.selectedUris,
+      fileOrder: this.fileOrder,
       openFiles: this.openFiles,
     });
   }
@@ -316,6 +334,11 @@ export class LogFilterSession {
       case 'filesSelectionChange': {
         const uris = Array.isArray(msg.uris) ? msg.uris.map(String) : [];
         this.setSelectedUris(uris);
+        break;
+      }
+      case 'filesOrderChange': {
+        const order = Array.isArray(msg.order) ? msg.order.map(String) : [];
+        this.setFileOrder(order);
         break;
       }
       case 'goToSource':
@@ -877,12 +900,15 @@ export class LogFilterSessionManager {
       const storedForUri = stored[state.sourceUri] ?? stored[key];
       const selectedUris =
         state.selectedUris ?? storedForUri?.selectedUris ?? [state.sourceUri];
+      const fileOrder =
+        state.fileOrder ?? storedForUri?.fileOrder ?? [];
       const session = this.createSession(
         uri,
         panel,
         sourceCol,
         state.query ?? storedForUri?.query ?? '',
         Array.isArray(selectedUris) ? selectedUris : [state.sourceUri],
+        Array.isArray(fileOrder) ? fileOrder : [],
       );
       this.sessions.set(key, session);
       panel.onDidDispose(() => {
@@ -949,6 +975,7 @@ export class LogFilterSessionManager {
     sourceCol: vscode.ViewColumn,
     initialQuery = '',
     initialSelectedUris: string[] = [],
+    initialFileOrder: string[] = [],
   ): LogFilterSession {
     const savedQueriesAccess: SavedQueriesAccess = {
       list: () => this.savedQueries.list(),
@@ -965,6 +992,7 @@ export class LogFilterSessionManager {
       () => this.persistSession(session),
       initialQuery,
       initialSelectedUris,
+      initialFileOrder,
       savedQueriesAccess,
       (queries) => this.broadcastSavedQueries(queries),
     );
@@ -988,6 +1016,7 @@ export class LogFilterSessionManager {
       sourceViewColumn: session.sourceViewColumn,
       query: session.query,
       selectedUris: session.selectedUris,
+      fileOrder: session.fileOrder,
     };
     void this.context.workspaceState.update(LogFilterSessionManager.PANELS_KEY, all);
   }
