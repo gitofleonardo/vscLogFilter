@@ -98,7 +98,7 @@
           currentMatchIndex = -1;
           findNavSynced = false;
         } else if (currentMatchIndex < 0 || currentMatchIndex >= matches.length) {
-          currentMatchIndex = 0;
+          currentMatchIndex = computeNext();
           findNavSynced = false;
         }
         updateStatus();
