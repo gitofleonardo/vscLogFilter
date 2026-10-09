@@ -20,6 +20,11 @@
   const filesCountEl = document.getElementById('files-count');
   const filesMenuEl = document.getElementById('files-menu');
   const filesDropdownEl = document.getElementById('files-dropdown');
+  const filtersBtnEl = document.getElementById('filters-btn');
+  const filtersBtnLabelEl = document.getElementById('filters-btn-label');
+  const filtersBtnMetaEl = document.getElementById('filters-btn-meta');
+  const filtersMenuEl = document.getElementById('filters-menu');
+  const filtersDropdownEl = document.getElementById('filters-dropdown');
   const savedBtnEl = document.getElementById('saved-btn');
   const savedMenuEl = document.getElementById('saved-menu');
   const savedDropdownEl = document.getElementById('saved-dropdown');
@@ -93,6 +98,9 @@
   let queryDebounce;
   let suggestionActive = -1;
   let primaryUri = '';
+  let activeSubPanelId = 'default';
+  let subPanels = [];
+  const tabUiById = new Map();
   let selectedUris = [];
   let fileOrder = [];
   let openFiles = [];
@@ -100,6 +108,7 @@
   let filesDropInsertIndex = -1;
   let selectedFileCount = 1;
   let filesMenuOpen = false;
+  let filtersMenuOpen = false;
   let savedMenuOpen = false;
   let savedQueries = [];
   let savedActive = -1;
@@ -239,10 +248,14 @@
       }
     } else if (msg.type === 'filesState') {
       handleFilesState(msg);
+    } else if (msg.type === 'subPanelsState') {
+      handleSubPanelsState(msg);
     } else if (msg.type === 'savedQueriesState') {
       handleSavedQueriesState(msg);
     } else if (msg.type === 'filterProgress') {
-      setFilterProgressPercent(msg.percent);
+      if (!msg.subPanelId || msg.subPanelId === activeSubPanelId) {
+        setFilterProgressPercent(msg.percent);
+      }
     } else if (msg.type === 'cherryUpdate') {
       handleCherryUpdate(msg);
     } else if (msg.type === 'showFind') {
@@ -621,7 +634,27 @@
     filesBtnEl.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (open) {
       setSavedMenuOpen(false);
+      setFiltersMenuOpen(false);
     }
+  }
+
+  function setFiltersMenuOpen(open) {
+    filtersMenuOpen = open;
+    if (filtersMenuEl) {
+      filtersMenuEl.classList.toggle('hidden', !open);
+    }
+    if (filtersBtnEl) {
+      filtersBtnEl.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+    if (open) {
+      setFilesMenuOpen(false);
+      setSavedMenuOpen(false);
+      renderFiltersMenu();
+    }
+  }
+
+  function toggleFiltersMenu() {
+    setFiltersMenuOpen(!filtersMenuOpen);
   }
 
   function toggleFilesMenu() {
@@ -811,6 +844,13 @@
     filesMenuEl.replaceChildren(fragment);
   }
 
+  if (filtersBtnEl) {
+    filtersBtnEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleFiltersMenu();
+    });
+  }
+
   filesBtnEl.addEventListener('click', (e) => {
     e.stopPropagation();
     toggleFilesMenu();
@@ -822,6 +862,9 @@
     }
     if (savedMenuOpen && !savedDropdownEl.contains(e.target)) {
       setSavedMenuOpen(false);
+    }
+    if (filtersMenuOpen && filtersDropdownEl && !filtersDropdownEl.contains(e.target)) {
+      setFiltersMenuOpen(false);
     }
     hideContextMenu();
   });
@@ -841,6 +884,11 @@
       e.preventDefault();
       return;
     }
+    if (filtersMenuOpen) {
+      setFiltersMenuOpen(false);
+      e.preventDefault();
+      return;
+    }
     if (filesMenuOpen) {
       setFilesMenuOpen(false);
     }
@@ -854,12 +902,201 @@
     return list.filter((item) => item.toLowerCase().includes(n));
   }
 
+  function tabUi(id) {
+    if (!tabUiById.has(id)) {
+      tabUiById.set(id, { scrollTop: 0, lastFilteredKey: '' });
+    }
+    return tabUiById.get(id);
+  }
+
+  function saveActiveTabScroll() {
+    tabUi(activeSubPanelId).scrollTop = listEl.scrollTop;
+  }
+
+  function syncSubPanelsFromMsg(list, activeId) {
+    if (Array.isArray(list)) {
+      subPanels = list.map((p) => ({
+        id: String(p.id),
+        query: String(p.query ?? ''),
+        matchedCount: Number(p.matchedCount) || 0,
+        label: String(p.label ?? p.query ?? 'Filter'),
+      }));
+    }
+    if (activeId && subPanels.some((p) => p.id === activeId)) {
+      activeSubPanelId = activeId;
+    } else if (subPanels.length > 0) {
+      activeSubPanelId = subPanels[0].id;
+    }
+    renderFiltersDropdown();
+  }
+
+  function handleSubPanelsState(msg) {
+    syncSubPanelsFromMsg(msg.subPanels, msg.activeSubPanelId);
+  }
+
+  function panelDisplayLabel(panel, index) {
+    return panel.label || panel.query || `Filter ${index + 1}`;
+  }
+
+  function updateFiltersButton() {
+    if (!filtersBtnLabelEl || !filtersBtnMetaEl) {
+      return;
+    }
+    const idx = subPanels.findIndex((p) => p.id === activeSubPanelId);
+    const panel = idx >= 0 ? subPanels[idx] : subPanels[0];
+    if (!panel) {
+      filtersBtnLabelEl.textContent = 'Filter';
+      filtersBtnMetaEl.textContent = '';
+      return;
+    }
+    filtersBtnLabelEl.textContent = panelDisplayLabel(panel, idx >= 0 ? idx : 0);
+    const parts = [];
+    if (subPanels.length > 1) {
+      parts.push(`${subPanels.length} views`);
+    }
+    if (panel.query.trim()) {
+      parts.push(String(panel.matchedCount));
+    }
+    filtersBtnMetaEl.textContent = parts.length ? `(${parts.join(' · ')})` : '';
+    if (filtersBtnEl) {
+      filtersBtnEl.title = panel.query || panelDisplayLabel(panel, idx >= 0 ? idx : 0);
+    }
+  }
+
+  function renderFiltersMenu() {
+    if (!filtersMenuEl) {
+      return;
+    }
+    const fragment = document.createDocumentFragment();
+    subPanels.forEach((panel, index) => {
+      const item = document.createElement('div');
+      item.className =
+        'filters-menu-item' + (panel.id === activeSubPanelId ? ' selected' : '');
+      item.setAttribute('role', 'option');
+      item.setAttribute('aria-selected', panel.id === activeSubPanelId ? 'true' : 'false');
+      item.title = panel.query || panelDisplayLabel(panel, index);
+
+      const check = document.createElement('span');
+      check.className = 'filters-menu-check';
+      check.textContent = panel.id === activeSubPanelId ? '✓' : '';
+      check.setAttribute('aria-hidden', 'true');
+
+      const label = document.createElement('span');
+      label.className = 'filters-menu-label';
+      label.textContent = panelDisplayLabel(panel, index);
+
+      const count = document.createElement('span');
+      count.className = 'filters-menu-count';
+      if (panel.query.trim()) {
+        count.textContent = String(panel.matchedCount);
+      }
+
+      item.appendChild(check);
+      item.appendChild(label);
+      item.appendChild(count);
+
+      if (subPanels.length > 1) {
+        const close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'filters-menu-close';
+        close.setAttribute('aria-label', 'Close filter view');
+        close.textContent = '×';
+        close.addEventListener('click', (e) => {
+          e.stopPropagation();
+          vscode.postMessage({ type: 'subPanelClose', subPanelId: panel.id });
+        });
+        item.appendChild(close);
+      }
+
+      item.addEventListener('click', () => {
+        if (panel.id === activeSubPanelId) {
+          setFiltersMenuOpen(false);
+          return;
+        }
+        activateSubPanelLocally(panel.id);
+        vscode.postMessage({ type: 'subPanelActivate', subPanelId: panel.id });
+        setFiltersMenuOpen(false);
+      });
+
+      fragment.appendChild(item);
+    });
+
+    const footer = document.createElement('div');
+    footer.className = 'filters-menu-footer';
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'filters-menu-add';
+    addBtn.textContent = 'New filter…';
+    addBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setFiltersMenuOpen(false);
+      vscode.postMessage({ type: 'subPanelAdd' });
+    });
+    footer.appendChild(addBtn);
+    fragment.appendChild(footer);
+
+    filtersMenuEl.replaceChildren(fragment);
+  }
+
+  function renderFiltersDropdown() {
+    updateFiltersButton();
+    if (filtersMenuOpen) {
+      renderFiltersMenu();
+    }
+  }
+
+  function activateSubPanelLocally(id) {
+    if (id === activeSubPanelId) {
+      return;
+    }
+    saveActiveTabScroll();
+    activeSubPanelId = id;
+    const panel = subPanels.find((p) => p.id === id);
+    if (panel) {
+      queryEl.value = panel.query;
+      matchCount = panel.matchedCount;
+    }
+    const ui = tabUi(id);
+    lastFilteredKey = ui.lastFilteredKey;
+    filterEpoch++;
+    rowCache.clear();
+    pendingRowRequest = null;
+    lastScrollTop = -1;
+    lastRenderedStart = -1;
+    lastRenderedEnd = -1;
+    listEl.scrollTop = ui.scrollTop;
+    listEl.scrollLeft = 0;
+    clearMultiSelect();
+    selectedIndex = matchCount > 0 ? 0 : -1;
+    renderFiltersDropdown();
+    updateQuerySyntaxHighlight();
+    updateSavedAddEnabled();
+    rebuildLayout();
+    if (matchCount > 0) {
+      renderVisibleRows(true);
+    } else {
+      rowsEl.replaceChildren();
+    }
+    renderSelection();
+    if (mainFind) {
+      mainFind.onContentChanged();
+    }
+  }
+
   function commitQuery() {
     clearTimeout(queryDebounce);
-    vscode.postMessage({ type: 'queryChange', query: queryEl.value });
+    const panel = subPanels.find((p) => p.id === activeSubPanelId);
+    if (panel) {
+      panel.query = queryEl.value;
+    }
+    vscode.postMessage({
+      type: 'queryChange',
+      query: queryEl.value,
+      subPanelId: activeSubPanelId,
+    });
     const state = vscode.getState();
     if (state?.sourceUri) {
-      vscode.setState({ ...state, query: queryEl.value });
+      vscode.setState({ ...state, query: queryEl.value, activeSubPanelId, subPanels });
     }
   }
 
@@ -966,6 +1203,7 @@
     savedBtnEl.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (open) {
       setFilesMenuOpen(false);
+      setFiltersMenuOpen(false);
       hideSuggestions();
       savedSearchEl.value = '';
       savedActive = -1;
@@ -1170,20 +1408,30 @@
       sourceViewColumn: msg.sourceViewColumn,
       query: msg.query ?? queryEl.value,
       selectedUris: msg.selectedUris ?? prev.selectedUris,
+      activeSubPanelId: msg.activeSubPanelId ?? activeSubPanelId,
+      subPanels: msg.subPanels ?? subPanels,
     });
   }
 
   function handleUpdate(msg) {
+    if (msg.activeSubPanelId) {
+      activeSubPanelId = msg.activeSubPanelId;
+    }
+    if (Array.isArray(msg.subPanels)) {
+      syncSubPanelsFromMsg(msg.subPanels, msg.activeSubPanelId || activeSubPanelId);
+    }
+
     if (msg.query !== undefined && document.activeElement !== queryEl) {
       queryEl.value = msg.query;
     }
 
     const nextMatchCount = msg.matchCount ?? msg.stats?.matched ?? 0;
     const filtering = msg.parseState === 'filtering';
-    const filteredKey = `${msg.query ?? ''}|${nextMatchCount}|${msg.parseState ?? ''}`;
+    const filteredKey = `${activeSubPanelId}|${msg.query ?? ''}|${nextMatchCount}|${msg.parseState ?? ''}`;
     const filterChanged = !filtering && filteredKey !== lastFilteredKey;
     if (filterChanged) {
       lastFilteredKey = filteredKey;
+      tabUi(activeSubPanelId).lastFilteredKey = filteredKey;
       lastScrollTop = -1;
       lastRenderedStart = -1;
       lastRenderedEnd = -1;
@@ -1269,6 +1517,10 @@
   }
 
   function handleRows(msg) {
+    const rowPanelId = msg.subPanelId || activeSubPanelId;
+    if (rowPanelId !== activeSubPanelId) {
+      return;
+    }
     // Prefetch from extension uses requestId -1; accept it without a pending request.
     const isPrefetch = msg && msg.requestId === -1;
     if (!isPrefetch && (!msg || msg.requestId !== pendingRowRequest?.id)) {
@@ -1357,7 +1609,13 @@
     }
     const requestId = ++rowRequestId;
     pendingRowRequest = { id: requestId, start: lo, end: hi, epoch: filterEpoch };
-    vscode.postMessage({ type: 'requestRows', start: lo, end: hi, requestId });
+    vscode.postMessage({
+      type: 'requestRows',
+      start: lo,
+      end: hi,
+      requestId,
+      subPanelId: activeSubPanelId,
+    });
   }
 
   function resolveFindController() {
@@ -1408,7 +1666,12 @@
       },
       requestMatches: (needle, requestId, cb) => {
         mainFindCallbacks.set(requestId, cb);
-        vscode.postMessage({ type: 'findInResults', needle, requestId });
+        vscode.postMessage({
+          type: 'findInResults',
+          needle,
+          requestId,
+          subPanelId: activeSubPanelId,
+        });
       },
     });
 

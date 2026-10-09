@@ -11,6 +11,7 @@ import type { LogEntry, ParseResult, SerializedLogEntry } from '../types';
 import { MAX_FIND_MATCHES, TAG_SUGGESTION_LIMIT, FILTER_PROGRESS_CHECK_EVERY } from '../constants';
 import { shortFileNameFromUriString } from '../uriUtils';
 import { shouldEmitFilterProgress } from './filterProgress';
+import { DEFAULT_SUB_PANEL_ID } from '../constants';
 
 interface ParseAccumulatorState {
   acc: LogParseAccumulator;
@@ -26,12 +27,25 @@ interface FilterMeta {
   fileMaxTime?: number;
   format: ParseResult['format'];
   filterWarnings?: string[];
+  viewId?: string;
 }
 
 let accumulating: ParseAccumulatorState | null = null;
 let parsedResult: ParseResult | null = null;
-/** Indices into parsedResult.entries for the latest filter. */
-let matchedIndices: number[] = [];
+/** Per sub-panel matched entry indices. */
+const viewMatchedIndices = new Map<string, number[]>();
+
+function clearAllViewFilters(): void {
+  viewMatchedIndices.clear();
+}
+
+function clearViewFilter(viewId: string): void {
+  viewMatchedIndices.delete(viewId);
+}
+
+function getMatchedIndices(viewId: string): number[] {
+  return viewMatchedIndices.get(viewId) ?? [];
+}
 
 function collectTags(entries: ParseResult['entries']): string[] {
   const tagSet = new Set<string>();
@@ -67,12 +81,15 @@ function toSerializedRow(entry: LogEntry, displayId: number): SerializedLogEntry
   };
 }
 
-/**
- * Build matched index list only — no fullText payload on the filter path.
- */
-function filterParsed(query: string, full: ParseResult, version: number): FilterMeta {
-  matchedIndices = [];
+function filterParsed(
+  query: string,
+  full: ParseResult,
+  version: number,
+  viewId: string,
+): FilterMeta {
+  const matchedIndices: number[] = [];
   if (!query.trim()) {
+    viewMatchedIndices.set(viewId, matchedIndices);
     return {
       entries: [],
       totalEntries: full.entries.length,
@@ -80,6 +97,7 @@ function filterParsed(query: string, full: ParseResult, version: number): Filter
       maxLineNumber: 1,
       fileMaxTime: full.fileMaxTime,
       format: full.format,
+      viewId,
     };
   }
   const { ast, warnings } = parseQuery(query);
@@ -101,12 +119,15 @@ function filterParsed(query: string, full: ParseResult, version: number): Filter
         parentPort?.postMessage({
           type: 'filterProgress',
           version,
+          viewId,
           processed: i + 1,
           total,
         });
       }
     }
   }
+
+  viewMatchedIndices.set(viewId, matchedIndices);
 
   return {
     entries: [],
@@ -116,13 +137,15 @@ function filterParsed(query: string, full: ParseResult, version: number): Filter
     fileMaxTime: full.fileMaxTime,
     format: full.format,
     filterWarnings: warnings,
+    viewId,
   };
 }
 
-function getRows(start: number, end: number): SerializedLogEntry[] {
+function getRows(viewId: string, start: number, end: number): SerializedLogEntry[] {
   if (!parsedResult) {
     return [];
   }
+  const matchedIndices = getMatchedIndices(viewId);
   const lo = Math.max(0, Math.floor(start));
   const hi = Math.min(matchedIndices.length, Math.floor(end));
   const rows: SerializedLogEntry[] = [];
@@ -136,10 +159,14 @@ function getRows(start: number, end: number): SerializedLogEntry[] {
   return rows;
 }
 
-function findInMatches(needle: string): Array<{ rowIndex: number; start: number; end: number }> {
+function findInMatches(
+  viewId: string,
+  needle: string,
+): Array<{ rowIndex: number; start: number; end: number }> {
   if (!parsedResult || !needle) {
     return [];
   }
+  const matchedIndices = getMatchedIndices(viewId);
   const lower = needle.toLowerCase();
   const matches: Array<{ rowIndex: number; start: number; end: number }> = [];
   for (let rowIndex = 0; rowIndex < matchedIndices.length; rowIndex++) {
@@ -171,6 +198,7 @@ parentPort?.on('message', (msg: {
   fileMtimeMs?: number;
   version?: number;
   query?: string;
+  viewId?: string;
   sourceUri?: string;
   start?: number;
   end?: number;
@@ -186,7 +214,7 @@ parentPort?.on('message', (msg: {
           version: msg.version ?? 0,
         };
         parsedResult = null;
-        matchedIndices = [];
+        clearAllViewFilters();
         parentPort?.postMessage({ type: 'ready', version: accumulating.version });
         break;
       case 'chunk': {
@@ -216,7 +244,7 @@ parentPort?.on('message', (msg: {
           return;
         }
         parsedResult = finalizeParseAccumulator(accumulating.acc, accumulating.fileMtimeMs);
-        matchedIndices = [];
+        clearAllViewFilters();
         accumulating = null;
         const version = msg.version ?? 0;
         parentPort?.postMessage({
@@ -232,16 +260,23 @@ parentPort?.on('message', (msg: {
           return;
         }
         const version = msg.version ?? 0;
-        const result = filterParsed(msg.query ?? '', parsedResult, version);
-        parentPort?.postMessage({ type: 'filtered', result, version });
+        const viewId = msg.viewId ?? DEFAULT_SUB_PANEL_ID;
+        const result = filterParsed(msg.query ?? '', parsedResult, version, viewId);
+        parentPort?.postMessage({ type: 'filtered', result, version, viewId });
+        break;
+      }
+      case 'clearView': {
+        clearViewFilter(msg.viewId ?? DEFAULT_SUB_PANEL_ID);
         break;
       }
       case 'getRows': {
         const requestId = msg.requestId ?? 0;
-        const rows = getRows(msg.start ?? 0, msg.end ?? 0);
+        const viewId = msg.viewId ?? DEFAULT_SUB_PANEL_ID;
+        const rows = getRows(viewId, msg.start ?? 0, msg.end ?? 0);
         parentPort?.postMessage({
           type: 'rows',
           requestId,
+          viewId,
           start: msg.start ?? 0,
           end: msg.end ?? 0,
           rows,
@@ -250,10 +285,12 @@ parentPort?.on('message', (msg: {
       }
       case 'findInResults': {
         const requestId = msg.requestId ?? 0;
-        const matches = findInMatches(msg.needle ?? '');
+        const viewId = msg.viewId ?? DEFAULT_SUB_PANEL_ID;
+        const matches = findInMatches(viewId, msg.needle ?? '');
         parentPort?.postMessage({
           type: 'findMatches',
           requestId,
+          viewId,
           matches,
           capped: matches.length >= MAX_FIND_MATCHES,
         });
@@ -262,7 +299,7 @@ parentPort?.on('message', (msg: {
       case 'cancel':
         accumulating = null;
         parsedResult = null;
-        matchedIndices = [];
+        clearAllViewFilters();
         parentPort?.postMessage({ type: 'cancelled', version: msg.version });
         break;
     }

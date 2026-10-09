@@ -1,5 +1,7 @@
 export const LOG_FILTER_PANEL_VIEW_TYPE = 'logFilter.panel';
 
+import type { SubPanelState } from './subPanels';
+
 export interface LogFilterPanelState {
   sourceUri: string;
   sourceViewColumn: number;
@@ -8,4 +10,6 @@ export interface LogFilterPanelState {
   selectedUris?: string[];
   /** User-defined order of all open files in the Files menu. */
   fileOrder?: string[];
+  subPanels?: SubPanelState[];
+  activeSubPanelId?: string;
 }

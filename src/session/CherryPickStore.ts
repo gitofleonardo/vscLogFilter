@@ -4,48 +4,63 @@ import {
 } from './cherryPickTypes';
 
 export class CherryPickStore {
-  private readonly items = new Map<string, CherryPickItem>();
+  private readonly buckets = new Map<string, Map<string, CherryPickItem>>();
 
-  add(item: CherryPickItem): boolean {
-    if (this.items.has(item.key)) {
+  private itemsFor(subPanelId: string): Map<string, CherryPickItem> {
+    let bucket = this.buckets.get(subPanelId);
+    if (!bucket) {
+      bucket = new Map();
+      this.buckets.set(subPanelId, bucket);
+    }
+    return bucket;
+  }
+
+  add(item: CherryPickItem, subPanelId: string): boolean {
+    const items = this.itemsFor(subPanelId);
+    if (items.has(item.key)) {
       return false;
     }
-    this.items.set(item.key, item);
+    items.set(item.key, item);
     return true;
   }
 
-  remove(key: string): boolean {
-    return this.items.delete(key);
+  remove(key: string, subPanelId: string): boolean {
+    return this.itemsFor(subPanelId).delete(key);
   }
 
-  removeMany(keys: string[]): number {
+  removeMany(keys: string[], subPanelId: string): number {
+    const items = this.itemsFor(subPanelId);
     let removed = 0;
     for (const key of keys) {
-      if (this.items.delete(key)) {
+      if (items.delete(key)) {
         removed++;
       }
     }
     return removed;
   }
 
+  clearSubPanel(subPanelId: string): void {
+    this.buckets.delete(subPanelId);
+  }
+
   clear(): void {
-    this.items.clear();
+    this.buckets.clear();
   }
 
-  has(key: string): boolean {
-    return this.items.has(key);
+  has(key: string, subPanelId: string): boolean {
+    return this.itemsFor(subPanelId).has(key);
   }
 
-  count(): number {
-    return this.items.size;
+  count(subPanelId: string): number {
+    return this.itemsFor(subPanelId).size;
   }
 
-  pickedKeys(): string[] {
-    return [...this.items.keys()];
+  pickedKeys(subPanelId: string): string[] {
+    return [...this.itemsFor(subPanelId).keys()];
   }
 
-  listSorted(): CherryPickItem[] {
-    return [...this.items.values()].sort((a, b) => {
+  listSorted(subPanelId: string): CherryPickItem[] {
+    return [...this.itemsFor(subPanelId).values()].sort((a, b) => {
       const uriCmp = a.sourceUri.localeCompare(b.sourceUri);
       if (uriCmp !== 0) {
         return uriCmp;

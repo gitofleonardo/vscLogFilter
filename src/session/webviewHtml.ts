@@ -31,6 +31,14 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
       </button>
       <div id="files-menu" class="hidden" role="listbox" aria-label="Open text files"></div>
     </div>
+    <div id="filters-dropdown">
+      <button id="filters-btn" type="button" aria-haspopup="listbox" aria-expanded="false" title="Switch filter view">
+        <span id="filters-btn-label">Filter</span>
+        <span id="filters-btn-meta"></span>
+        <span class="filters-btn-chevron" aria-hidden="true">▾</span>
+      </button>
+      <div id="filters-menu" class="hidden" role="listbox" aria-label="Filter views"></div>
+    </div>
     <div id="query-wrap">
       <div id="query-field">
         <div id="query-editor">

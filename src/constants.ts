@@ -16,6 +16,9 @@ export const MAX_SAVED_QUERIES = 50;
 /** globalState key for saved filter queries. */
 export const SAVED_QUERIES_KEY = 'logFilter.savedQueries';
 
+/** Default sub-panel id (legacy single-query panel). */
+export const DEFAULT_SUB_PANEL_ID = 'default';
+
 /** How often (entries) the filter loop considers emitting determinate progress. Power of two. */
 export const FILTER_PROGRESS_CHECK_EVERY = 4096;
 

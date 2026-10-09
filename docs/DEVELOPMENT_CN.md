@@ -38,6 +38,14 @@ npm test
 
 在 VS Code 中按 F5 启动 Extension Development Host 做手工验证。
 
+## 多标签过滤（Sub Panel）
+
+- Log Filter 面板工具栏 **Files** 右侧为 **Filters** 下拉：每个视图有独立 query 与 Worker 内一份 `matchedIndices` 缓存。
+- 下拉内 **New filter** 新建视图；条目 **×** 关闭（至少保留一个）。切换视图不重跑 filter，直接读取已有结果。
+- **Saved** 列表全局共享；保存/套用只影响当前激活视图的 query。
+- Cherry View 按当前激活视图分桶展示 Pick 结果。
+- 持久化：`panelState.subPanels`（query 列表）与 `activeSubPanelId`；命中缓存不持久化，重开面板后对非空 query 重新 filter。
+
 ---
 
 English: [DEVELOPMENT.md](DEVELOPMENT.md) · 语法实现：[SYNTAX_CN.md](SYNTAX_CN.md)

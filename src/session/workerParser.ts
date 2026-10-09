@@ -24,6 +24,7 @@ export interface FilterResultMeta {
   matchedCount: number;
   maxLineNumber: number;
   filterWarnings?: string[];
+  viewId?: string;
 }
 
 export type IndexSource =
@@ -46,13 +47,14 @@ export class WorkerParser {
   private parseVersion = 0;
   private cacheKey?: string;
   private indexMeta?: IndexMeta;
-  private pendingFilterJob?: {
+  private filterQueue: Array<{
     query: string;
+    viewId: string;
     generation: number;
     onProgress?: (processed: number, total: number) => void;
     resolve: (result: FilterResultMeta) => void;
     reject: (err: Error) => void;
-  };
+  }> = [];
   private filterDraining = false;
   private rowRequestId = 0;
   private findRequestId = 0;
@@ -223,6 +225,7 @@ export class WorkerParser {
 
   filterQuery(
     query: string,
+    viewId: string,
     generation: number,
     onProgress?: (processed: number, total: number) => void,
   ): Promise<FilterResultMeta> {
@@ -231,15 +234,21 @@ export class WorkerParser {
     }
 
     return new Promise((resolve, reject) => {
-      if (this.pendingFilterJob) {
-        this.pendingFilterJob.reject(new Error('Filter superseded'));
-      }
-      this.pendingFilterJob = { query, generation, onProgress, resolve, reject };
+      this.filterQueue = this.filterQueue.filter((j) => j.viewId !== viewId);
+      this.filterQueue.push({ query, viewId, generation, onProgress, resolve, reject });
       void this.drainFilterQueue();
     });
   }
 
-  getRows(start: number, end: number): Promise<SerializedLogEntry[]> {
+  clearViewFilter(viewId: string): void {
+    if (!this.worker) {
+      return;
+    }
+    this.filterQueue = this.filterQueue.filter((j) => j.viewId !== viewId);
+    this.worker.postMessage({ type: 'clearView', viewId });
+  }
+
+  getRows(start: number, end: number, viewId: string): Promise<SerializedLogEntry[]> {
     if (!this.worker || !this.indexMeta) {
       return Promise.reject(new Error('Log index not ready'));
     }
@@ -263,12 +272,13 @@ export class WorkerParser {
         }
       };
       worker.on('message', onMessage);
-      worker.postMessage({ type: 'getRows', start, end, requestId });
+      worker.postMessage({ type: 'getRows', start, end, requestId, viewId });
     });
   }
 
   findInResults(
     needle: string,
+    viewId: string,
   ): Promise<{ matches: Array<{ rowIndex: number; start: number; end: number }>; capped: boolean }> {
     if (!this.worker || !this.indexMeta) {
       return Promise.reject(new Error('Log index not ready'));
@@ -294,15 +304,15 @@ export class WorkerParser {
         }
       };
       worker.on('message', onMessage);
-      worker.postMessage({ type: 'findInResults', needle, requestId });
+      worker.postMessage({ type: 'findInResults', needle, requestId, viewId });
     });
   }
 
   private cancelPendingFilter(): void {
-    if (this.pendingFilterJob) {
-      this.pendingFilterJob.reject(new Error('Filter superseded'));
-      this.pendingFilterJob = undefined;
+    for (const job of this.filterQueue) {
+      job.reject(new Error('Filter superseded'));
     }
+    this.filterQueue = [];
   }
 
   private async drainFilterQueue(): Promise<void> {
@@ -311,28 +321,24 @@ export class WorkerParser {
     }
     this.filterDraining = true;
     try {
-      while (this.pendingFilterJob) {
-        const job = this.pendingFilterJob;
-        this.pendingFilterJob = undefined;
+      while (this.filterQueue.length > 0) {
+        const job = this.filterQueue.shift()!;
         try {
-          const result = await this.executeFilter(job.query, job.generation, job.onProgress);
-          if (this.pendingFilterJob) {
-            job.reject(new Error('Filter superseded'));
-            continue;
-          }
+          const result = await this.executeFilter(
+            job.query,
+            job.viewId,
+            job.generation,
+            job.onProgress,
+          );
           job.resolve(result);
         } catch (err) {
           const error = err instanceof Error ? err : new Error(String(err));
-          if (this.pendingFilterJob) {
-            job.reject(new Error('Filter superseded'));
-            continue;
-          }
           job.reject(error);
         }
       }
     } finally {
       this.filterDraining = false;
-      if (this.pendingFilterJob) {
+      if (this.filterQueue.length > 0) {
         void this.drainFilterQueue();
       }
     }
@@ -340,6 +346,7 @@ export class WorkerParser {
 
   private executeFilter(
     query: string,
+    viewId: string,
     generation: number,
     onProgress?: (processed: number, total: number) => void,
   ): Promise<FilterResultMeta> {
@@ -373,7 +380,7 @@ export class WorkerParser {
         }
       };
       worker.on('message', onMessage);
-      worker.postMessage({ type: 'filter', query, version: generation });
+      worker.postMessage({ type: 'filter', query, viewId, version: generation });
     });
   }
 

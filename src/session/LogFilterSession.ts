@@ -20,6 +20,14 @@ import {
   normalizePreferredSelected,
   selectedUrisInFileOrder,
 } from './fileOrder';
+import {
+  createSubPanel,
+  initialSubPanels,
+  newSubPanelId,
+  tabLabel,
+  toPersistedSubPanels,
+  type SubPanelRuntime,
+} from './subPanels';
 
 export { LOG_FILTER_PANEL_VIEW_TYPE };
 
@@ -39,7 +47,8 @@ export class LogFilterSession {
   readonly uri: vscode.Uri;
   panel: vscode.WebviewPanel;
   sourceViewColumn: vscode.ViewColumn;
-  query = '';
+  subPanels: SubPanelRuntime[] = [];
+  activeSubPanelId = '';
   /** Always includes primary `uri`; extras are optional open tabs. */
   selectedUris: string[] = [];
   /** User-defined order of all open files in the Files menu. */
@@ -62,8 +71,8 @@ export class LogFilterSession {
   private cachedTags: string[] = [];
   private disposables: vscode.Disposable[] = [];
   private parseTimer?: ReturnType<typeof setTimeout>;
-  private queryTimer?: ReturnType<typeof setTimeout>;
-  private filterGeneration = 0;
+  private queryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private filteringSubPanelId?: string;
   private workerParser: WorkerParser;
   /** Suppress reparse from syncOpenFiles during construction / first paint. */
   private allowSyncReparse = false;
@@ -79,13 +88,21 @@ export class LogFilterSession {
     initialQuery = '',
     initialSelectedUris: string[] = [],
     initialFileOrder: string[] = [],
+    persistedSubPanels?: import('./subPanels').SubPanelState[],
+    persistedActiveSubPanelId?: string,
     private savedQueriesAccess?: SavedQueriesAccess,
     private onSavedQueriesChanged?: (queries: string[]) => void,
   ) {
     this.uri = uri;
     this.panel = panel;
     this.sourceViewColumn = sourceViewColumn;
-    this.query = initialQuery;
+    const restored = initialSubPanels(
+      initialQuery,
+      persistedSubPanels,
+      persistedActiveSubPanelId,
+    );
+    this.subPanels = restored.panels;
+    this.activeSubPanelId = restored.activeSubPanelId;
     const primary = uri.toString();
     this.selectedUris = [primary];
     this.fileOrder = initialFileOrder.slice();
@@ -109,6 +126,28 @@ export class LogFilterSession {
 
   private primaryUriString(): string {
     return this.uri.toString();
+  }
+
+  activeSubPanel(): SubPanelRuntime {
+    const found = this.subPanels.find((p) => p.id === this.activeSubPanelId);
+    if (found) {
+      return found;
+    }
+    if (this.subPanels.length > 0) {
+      return this.subPanels[0];
+    }
+    const fallback = createSubPanel('default', '');
+    this.subPanels = [fallback];
+    this.activeSubPanelId = fallback.id;
+    return fallback;
+  }
+
+  subPanelById(id: string): SubPanelRuntime | undefined {
+    return this.subPanels.find((p) => p.id === id);
+  }
+
+  get query(): string {
+    return this.activeSubPanel().query;
   }
 
   includesUri(uri: vscode.Uri | string): boolean {
@@ -153,16 +192,89 @@ export class LogFilterSession {
     void this.panel.webview.postMessage({ type: 'findPrevious' });
   }
 
+  setSubPanelQuery(subPanelId: string, query: string): void {
+    const panel = this.subPanelById(subPanelId);
+    if (!panel) {
+      return;
+    }
+    panel.query = query;
+    this.scheduleFilter(subPanelId);
+  }
+
   setQuery(query: string): void {
-    this.query = query;
-    this.scheduleFilter();
+    this.setSubPanelQuery(this.activeSubPanelId, query);
   }
 
   clearQuery(): void {
-    this.query = '';
-    this.scheduleFilter();
+    this.setSubPanelQuery(this.activeSubPanelId, '');
+    void this.applyFilter(this.activeSubPanelId);
     this.postUpdate();
     this.persist();
+  }
+
+  addSubPanel(): string {
+    const id = newSubPanelId();
+    this.subPanels.push(createSubPanel(id, ''));
+    this.activeSubPanelId = id;
+    this.pushSubPanelsState();
+    this.postUpdate();
+    this.persist();
+    return id;
+  }
+
+  closeSubPanel(subPanelId: string): void {
+    if (this.subPanels.length <= 1) {
+      return;
+    }
+    const idx = this.subPanels.findIndex((p) => p.id === subPanelId);
+    if (idx < 0) {
+      return;
+    }
+    this.subPanels.splice(idx, 1);
+    this.workerParser.clearViewFilter(subPanelId);
+    this.cherryStore.clearSubPanel(subPanelId);
+    const timer = this.queryTimers.get(subPanelId);
+    if (timer) {
+      clearTimeout(timer);
+      this.queryTimers.delete(subPanelId);
+    }
+    if (this.activeSubPanelId === subPanelId) {
+      this.activeSubPanelId = this.subPanels[Math.max(0, idx - 1)].id;
+      this.syncActivePanelFromCache();
+    }
+    this.pushSubPanelsState();
+    this.postUpdate();
+    this.persist();
+  }
+
+  activateSubPanel(subPanelId: string): void {
+    if (!this.subPanelById(subPanelId)) {
+      return;
+    }
+    this.activeSubPanelId = subPanelId;
+    this.syncActivePanelFromCache();
+    this.pushSubPanelsState();
+    this.postUpdate();
+    void this.prefetchActiveRows();
+  }
+
+  private syncActivePanelFromCache(): void {
+    const active = this.activeSubPanel();
+    this.matchedCount = active.matchedCount;
+    this.filterMaxLineNumber = active.maxLineNumber;
+  }
+
+  private pushSubPanelsState(): void {
+    void this.panel.webview.postMessage({
+      type: 'subPanelsState',
+      subPanels: this.subPanels.map((p, i) => ({
+        id: p.id,
+        query: p.query,
+        matchedCount: p.matchedCount,
+        label: tabLabel(p, i),
+      })),
+      activeSubPanelId: this.activeSubPanelId,
+    });
   }
 
   /** Replace open-file dropdown options from currently open text tabs. */
@@ -309,12 +421,32 @@ export class LogFilterSession {
       case 'ready':
         this.pushFilesState();
         this.pushSavedQueries();
+        this.pushSubPanelsState();
         this.pushCherryView();
         break;
-      case 'queryChange':
-        this.setQuery(String(msg.query ?? ''));
+      case 'queryChange': {
+        const subPanelId = String(msg.subPanelId ?? this.activeSubPanelId);
+        this.setSubPanelQuery(subPanelId, String(msg.query ?? ''));
         this.persist();
         break;
+      }
+      case 'subPanelAdd':
+        this.addSubPanel();
+        break;
+      case 'subPanelClose': {
+        const id = String(msg.subPanelId ?? '');
+        if (id) {
+          this.closeSubPanel(id);
+        }
+        break;
+      }
+      case 'subPanelActivate': {
+        const id = String(msg.subPanelId ?? '');
+        if (id) {
+          this.activateSubPanel(id);
+        }
+        break;
+      }
       case 'addSavedQuery': {
         if (!this.savedQueriesAccess) {
           break;
@@ -345,10 +477,19 @@ export class LogFilterSession {
         void this.goToSource(Number(msg.line), msg.sourceUri ? String(msg.sourceUri) : undefined);
         break;
       case 'requestRows':
-        void this.handleRequestRows(Number(msg.start), Number(msg.end), Number(msg.requestId));
+        void this.handleRequestRows(
+          Number(msg.start),
+          Number(msg.end),
+          Number(msg.requestId),
+          msg.subPanelId ? String(msg.subPanelId) : this.activeSubPanelId,
+        );
         break;
       case 'findInResults':
-        void this.handleFindInResults(String(msg.needle ?? ''), Number(msg.requestId));
+        void this.handleFindInResults(
+          String(msg.needle ?? ''),
+          Number(msg.requestId),
+          msg.subPanelId ? String(msg.subPanelId) : this.activeSubPanelId,
+        );
         break;
       case 'selectEntry':
         break;
@@ -373,12 +514,13 @@ export class LogFilterSession {
   }
 
   private pushCherryView(opts?: { expand?: boolean }): void {
+    const subPanelId = this.activeSubPanelId;
     void this.panel.webview.postMessage({
       type: 'cherryUpdate',
-      pickedKeys: this.cherryStore.pickedKeys(),
-      count: this.cherryStore.count(),
-      items: this.cherryStore.listSorted(),
-      highlightTerms: extractHighlightTerms(this.query),
+      pickedKeys: this.cherryStore.pickedKeys(subPanelId),
+      count: this.cherryStore.count(subPanelId),
+      items: this.cherryStore.listSorted(subPanelId),
+      highlightTerms: extractHighlightTerms(this.activeSubPanel().query),
       expand: opts?.expand === true,
     });
   }
@@ -394,13 +536,13 @@ export class LogFilterSession {
 
     for (const idx of unique) {
       try {
-        const rows = await this.workerParser.getRows(idx, idx + 1);
+        const rows = await this.workerParser.getRows(idx, idx + 1, this.activeSubPanelId);
         const row = rows[0];
         if (!row) {
           continue;
         }
         const item = cherryPickItemFromRow(row, primary);
-        if (this.cherryStore.add(item)) {
+        if (this.cherryStore.add(item, this.activeSubPanelId)) {
           added++;
         } else {
           duplicates++;
@@ -425,15 +567,15 @@ export class LogFilterSession {
     if (!keys.length) {
       return;
     }
-    this.cherryStore.removeMany(keys);
+    this.cherryStore.removeMany(keys, this.activeSubPanelId);
     this.pushCherryView();
   }
 
   private clearCherryPicks(): void {
-    if (this.cherryStore.count() === 0) {
+    if (this.cherryStore.count(this.activeSubPanelId) === 0) {
       return;
     }
-    this.cherryStore.clear();
+    this.cherryStore.clearSubPanel(this.activeSubPanelId);
     this.pushCherryView();
   }
 
@@ -441,13 +583,55 @@ export class LogFilterSession {
     this.cherryStore.clear();
   }
 
-  private scheduleFilter(): void {
-    if (this.queryTimer) {
-      clearTimeout(this.queryTimer);
+  private scheduleFilter(subPanelId: string): void {
+    const existing = this.queryTimers.get(subPanelId);
+    if (existing) {
+      clearTimeout(existing);
     }
-    // Keep the toolbar quiet while filtering — avoid flashing the scan progress bar.
     const { queryDebounceMs } = getLogFilterSettings();
-    this.queryTimer = setTimeout(() => void this.applyFilter(), queryDebounceMs);
+    const timer = setTimeout(() => void this.applyFilter(subPanelId), queryDebounceMs);
+    this.queryTimers.set(subPanelId, timer);
+  }
+
+  private async applyAllFilters(): Promise<void> {
+    for (const panel of this.subPanels) {
+      if (!panel.query.trim()) {
+        panel.matchedCount = 0;
+        panel.maxLineNumber = 1;
+        await this.workerParser.filterQuery('', panel.id, ++panel.filterGeneration);
+        continue;
+      }
+      await this.applyFilter(panel.id);
+    }
+    this.syncActivePanelFromCache();
+    this.postUpdate();
+    void this.prefetchActiveRows();
+  }
+
+  private async prefetchActiveRows(): Promise<void> {
+    const active = this.activeSubPanel();
+    if (!this.workerParser.isIndexed || active.matchedCount <= 0) {
+      return;
+    }
+    try {
+      const initialRows = await this.workerParser.getRows(
+        0,
+        Math.min(80, active.matchedCount),
+        active.id,
+      );
+      if (initialRows.length > 0) {
+        void this.panel.webview.postMessage({
+          type: 'rows',
+          requestId: -1,
+          subPanelId: active.id,
+          start: 0,
+          end: initialRows.length,
+          rows: initialRows,
+        });
+      }
+    } catch (err) {
+      logError('prefetch rows failed', err);
+    }
   }
 
   scheduleReparse(): void {
@@ -588,7 +772,7 @@ export class LogFilterSession {
         logInfo(
           `Reused indexed log (${meta.totalEntries} entries) for ${this.selectedUris.length} file(s)`,
         );
-        await this.applyFilter();
+        await this.applyAllFilters();
         return;
       }
 
@@ -629,7 +813,7 @@ export class LogFilterSession {
       logInfo(
         `Indexed ${meta.totalEntries} entries (${meta.format}) from ${this.selectedUris.length} file(s)`,
       );
-      await this.applyFilter();
+      await this.applyAllFilters();
     } catch (err) {
       if (currentVersion !== this.version) {
         return;
@@ -645,7 +829,7 @@ export class LogFilterSession {
     }
   }
 
-  private async applyFilter(): Promise<void> {
+  private async applyFilter(subPanelId: string): Promise<void> {
     if (
       (this.parseState !== 'ready' && this.parseState !== 'filtering') ||
       !this.workerParser.isIndexed
@@ -653,68 +837,79 @@ export class LogFilterSession {
       return;
     }
 
-    if (!this.query.trim()) {
+    const panel = this.subPanelById(subPanelId);
+    if (!panel) {
+      return;
+    }
+
+    if (!panel.query.trim()) {
+      panel.matchedCount = 0;
+      panel.maxLineNumber = 1;
       this.entries = [];
       this.filteredIds = [];
-      this.matchedCount = 0;
-      this.filterMaxLineNumber = 1;
-      this.warnings = [...this.sourceWarnings];
-      this.parseState = 'ready';
-      this.postUpdate();
+      if (subPanelId === this.activeSubPanelId) {
+        this.matchedCount = 0;
+        this.filterMaxLineNumber = 1;
+        this.warnings = [...this.sourceWarnings];
+        this.parseState = 'ready';
+        this.filteringSubPanelId = undefined;
+        this.postUpdate();
+      }
+      await this.workerParser.filterQuery('', subPanelId, ++panel.filterGeneration);
       return;
     }
 
     this.parseState = 'filtering';
-    this.postUpdate();
-    const gen = ++this.filterGeneration;
+    this.filteringSubPanelId = subPanelId;
+    if (subPanelId === this.activeSubPanelId) {
+      this.postUpdate();
+    }
+    const gen = ++panel.filterGeneration;
     const started = Date.now();
     try {
-      const result = await this.workerParser.filterQuery(this.query, gen, (processed, total) => {
-        if (gen !== this.filterGeneration) {
-          return;
-        }
-        void this.panel.webview.postMessage({
-          type: 'filterProgress',
-          percent: inFlightFilterPercent(processed, total),
-        });
-      });
-      if (gen !== this.filterGeneration) {
+      const result = await this.workerParser.filterQuery(
+        panel.query,
+        subPanelId,
+        gen,
+        (processed, total) => {
+          if (gen !== panel.filterGeneration) {
+            return;
+          }
+          if (subPanelId !== this.activeSubPanelId) {
+            return;
+          }
+          void this.panel.webview.postMessage({
+            type: 'filterProgress',
+            percent: inFlightFilterPercent(processed, total),
+            subPanelId,
+          });
+        },
+      );
+      if (gen !== panel.filterGeneration) {
         return;
       }
+      panel.matchedCount = result.matchedCount;
+      panel.maxLineNumber = result.maxLineNumber || 1;
       this.entries = [];
-      this.matchedCount = result.matchedCount;
-      this.filterMaxLineNumber = result.maxLineNumber || 1;
       this.filteredIds = [];
       this.warnings = [...this.sourceWarnings, ...(result.filterWarnings ?? [])];
       this.parseState = 'ready';
+      this.filteringSubPanelId = undefined;
       logInfo(
-        `Filter "${this.query}" → ${this.matchedCount} match(es)` +
+        `Filter [${subPanelId}] "${panel.query}" → ${panel.matchedCount} match(es)` +
           ` in ${Date.now() - started}ms across ${this.selectedUris.length} file(s)`,
       );
 
-      let initialRows: Awaited<ReturnType<WorkerParser['getRows']>> | undefined;
-      if (this.matchedCount > 0) {
-        try {
-          initialRows = await this.workerParser.getRows(0, Math.min(80, this.matchedCount));
-        } catch (err) {
-          logError('prefetch rows failed', err);
-        }
-      }
-      if (gen !== this.filterGeneration) {
-        return;
-      }
-      this.postUpdate();
-      if (initialRows && initialRows.length > 0) {
-        void this.panel.webview.postMessage({
-          type: 'rows',
-          requestId: -1,
-          start: 0,
-          end: initialRows.length,
-          rows: initialRows,
-        });
+      if (subPanelId === this.activeSubPanelId) {
+        this.matchedCount = panel.matchedCount;
+        this.filterMaxLineNumber = panel.maxLineNumber;
+        this.postUpdate();
+        void this.prefetchActiveRows();
+      } else {
+        this.pushSubPanelsState();
       }
     } catch (err) {
-      if (gen !== this.filterGeneration) {
+      if (gen !== panel.filterGeneration) {
         return;
       }
       const message = String(err);
@@ -722,21 +917,30 @@ export class LogFilterSession {
         return;
       }
       this.parseState = 'ready';
+      this.filteringSubPanelId = undefined;
       this.warnings = [message];
       logError(`Filter failed for ${this.uri.fsPath}`, err);
-      this.postUpdate();
+      if (subPanelId === this.activeSubPanelId) {
+        this.postUpdate();
+      }
     }
   }
 
-  private async handleRequestRows(start: number, end: number, requestId: number): Promise<void> {
+  private async handleRequestRows(
+    start: number,
+    end: number,
+    requestId: number,
+    subPanelId: string,
+  ): Promise<void> {
     if (!this.workerParser.isIndexed || this.parseState === 'parsing') {
       return;
     }
     try {
-      const rows = await this.workerParser.getRows(start, end);
+      const rows = await this.workerParser.getRows(start, end, subPanelId);
       void this.panel.webview.postMessage({
         type: 'rows',
         requestId,
+        subPanelId,
         start,
         end,
         rows,
@@ -746,21 +950,27 @@ export class LogFilterSession {
     }
   }
 
-  private async handleFindInResults(needle: string, requestId: number): Promise<void> {
+  private async handleFindInResults(
+    needle: string,
+    requestId: number,
+    subPanelId: string,
+  ): Promise<void> {
     if (!this.workerParser.isIndexed) {
       void this.panel.webview.postMessage({
         type: 'findMatches',
         requestId,
+        subPanelId,
         matches: [],
         capped: false,
       });
       return;
     }
     try {
-      const result = await this.workerParser.findInResults(needle);
+      const result = await this.workerParser.findInResults(needle, subPanelId);
       void this.panel.webview.postMessage({
         type: 'findMatches',
         requestId,
+        subPanelId,
         matches: result.matches,
         capped: result.capped,
       });
@@ -769,6 +979,7 @@ export class LogFilterSession {
       void this.panel.webview.postMessage({
         type: 'findMatches',
         requestId,
+        subPanelId,
         matches: [],
         capped: false,
       });
@@ -782,19 +993,27 @@ export class LogFilterSession {
   private postUpdate(): void {
     const fileName = shortFileName(this.primaryUriString());
     const tags = this.cachedTags;
-    const highlightTerms = extractHighlightTerms(this.query);
+    const active = this.activeSubPanel();
+    const highlightTerms = extractHighlightTerms(active.query);
 
     const scanning = this.parseState === 'parsing';
     const scan = this.scanStats;
     const total = scanning && scan ? scan.entryCount : this.totalEntryCount();
-    const matched = scanning ? 0 : this.matchedCount;
+    const matched = scanning ? 0 : active.matchedCount;
 
     this.panel.webview.postMessage({
       type: 'update',
       sourceUri: this.uri.toString(),
       sourceViewColumn: this.sourceViewColumn,
-      query: this.query,
-      matchCount: scanning ? 0 : this.matchedCount,
+      query: active.query,
+      activeSubPanelId: this.activeSubPanelId,
+      subPanels: this.subPanels.map((p, i) => ({
+        id: p.id,
+        query: p.query,
+        matchedCount: p.matchedCount,
+        label: tabLabel(p, i),
+      })),
+      matchCount: scanning ? 0 : active.matchedCount,
       selectedUris: this.selectedUris,
       stats: { total, matched },
       fileName,
@@ -805,7 +1024,7 @@ export class LogFilterSession {
       scanStats: scan,
       tags,
       highlightTerms,
-      maxLineNumber: this.filterMaxLineNumber,
+      maxLineNumber: active.maxLineNumber,
     });
     this.pushCherryView();
   }
@@ -829,9 +1048,10 @@ export class LogFilterSession {
     if (this.parseTimer) {
       clearTimeout(this.parseTimer);
     }
-    if (this.queryTimer) {
-      clearTimeout(this.queryTimer);
+    for (const timer of this.queryTimers.values()) {
+      clearTimeout(timer);
     }
+    this.queryTimers.clear();
     this.workerParser.dispose();
     this.disposeCherry();
     vscode.Disposable.from(...this.disposables).dispose();
@@ -902,13 +1122,19 @@ export class LogFilterSessionManager {
         state.selectedUris ?? storedForUri?.selectedUris ?? [state.sourceUri];
       const fileOrder =
         state.fileOrder ?? storedForUri?.fileOrder ?? [];
+      const legacyQuery = state.query ?? storedForUri?.query ?? '';
+      const subPanels = state.subPanels ?? storedForUri?.subPanels;
+      const activeSubPanelId =
+        state.activeSubPanelId ?? storedForUri?.activeSubPanelId;
       const session = this.createSession(
         uri,
         panel,
         sourceCol,
-        state.query ?? storedForUri?.query ?? '',
+        legacyQuery,
         Array.isArray(selectedUris) ? selectedUris : [state.sourceUri],
         Array.isArray(fileOrder) ? fileOrder : [],
+        subPanels,
+        activeSubPanelId,
       );
       this.sessions.set(key, session);
       panel.onDidDispose(() => {
@@ -976,6 +1202,8 @@ export class LogFilterSessionManager {
     initialQuery = '',
     initialSelectedUris: string[] = [],
     initialFileOrder: string[] = [],
+    persistedSubPanels?: import('./subPanels').SubPanelState[],
+    persistedActiveSubPanelId?: string,
   ): LogFilterSession {
     const savedQueriesAccess: SavedQueriesAccess = {
       list: () => this.savedQueries.list(),
@@ -993,6 +1221,8 @@ export class LogFilterSessionManager {
       initialQuery,
       initialSelectedUris,
       initialFileOrder,
+      persistedSubPanels,
+      persistedActiveSubPanelId,
       savedQueriesAccess,
       (queries) => this.broadcastSavedQueries(queries),
     );
@@ -1011,12 +1241,15 @@ export class LogFilterSessionManager {
       this.context.workspaceState.get<Record<string, LogFilterPanelState>>(
         LogFilterSessionManager.PANELS_KEY,
       ) ?? {};
+    const active = session.activeSubPanel();
     all[session.uri.toString()] = {
       sourceUri: session.uri.toString(),
       sourceViewColumn: session.sourceViewColumn,
-      query: session.query,
+      query: active.query,
       selectedUris: session.selectedUris,
       fileOrder: session.fileOrder,
+      subPanels: toPersistedSubPanels(session.subPanels),
+      activeSubPanelId: session.activeSubPanelId,
     };
     void this.context.workspaceState.update(LogFilterSessionManager.PANELS_KEY, all);
   }
