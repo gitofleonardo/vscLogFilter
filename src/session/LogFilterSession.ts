@@ -506,6 +506,9 @@ export class LogFilterSession {
       case 'captureNewFile':
         void this.rotateCaptureLogFile();
         break;
+      case 'captureOpenLog':
+        void this.openCaptureLogInEditor();
+        break;
       case 'queryChange': {
         const subPanelId = String(msg.subPanelId ?? this.activeSubPanelId);
         this.setSubPanelQuery(subPanelId, String(msg.query ?? ''));

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import {
   captureIconClearBuffer,
   captureIconNewFile,
+  captureIconOpenLog,
   captureIconRecord,
   captureIconStop,
 } from './captureBarIcons';
@@ -40,6 +41,9 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
     </div>
     <div class="capture-sep" aria-hidden="true"></div>
     <div class="capture-group capture-group-actions" role="group" aria-label="Capture actions">
+      <button id="capture-open-log" class="capture-icon-btn" type="button" title="Open current capture log in editor" aria-label="Open capture log in editor">
+        ${captureIconOpenLog}
+      </button>
       <button id="capture-new-file" class="capture-icon-btn" type="button" title="New capture file — discard current log" aria-label="New capture file">
         ${captureIconNewFile}
       </button>

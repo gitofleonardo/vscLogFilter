@@ -29,7 +29,7 @@ Android Studio Logcat-style log filtering for VS Code. Run **Log Filter: Open** 
 
 1. Run **Log Filter: Open Live Log Capture** (or click status bar **Log Capture**)
 2. Pick an adb device; optionally toggle **⌫ Clear buffer** (highlighted when on; runs `adb logcat -c` before start; capture still starts if clear fails)
-3. Use the record button to start (adb on PATH or set `logFilter.adbPath`)
+3. Use the record button to start (adb on PATH or set `logFilter.adbPath`); use the **document** toolbar icon to reopen the temp log if you closed its editor tab
 4. While recording, the query box does **not** filter results; the panel shows the full log. You can edit the query for use after stop
 5. Press the record button again to **Stop** and apply the current query. Closing the capture panel stops adb and deletes the temp file
 

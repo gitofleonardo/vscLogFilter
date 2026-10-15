@@ -45,6 +45,7 @@
   const captureBarEl = document.getElementById('capture-bar');
   const captureDeviceEl = document.getElementById('capture-device');
   const captureRefreshEl = document.getElementById('capture-refresh');
+  const captureOpenLogEl = document.getElementById('capture-open-log');
   const captureNewFileEl = document.getElementById('capture-new-file');
   const captureToggleEl = document.getElementById('capture-toggle');
   const captureClearBufferEl = document.getElementById('capture-clear-buffer');
@@ -358,6 +359,10 @@
 
   captureRefreshEl.addEventListener('click', () => {
     vscode.postMessage({ type: 'captureRefreshDevices' });
+  });
+
+  captureOpenLogEl.addEventListener('click', () => {
+    vscode.postMessage({ type: 'captureOpenLog' });
   });
 
   captureNewFileEl.addEventListener('click', () => {
