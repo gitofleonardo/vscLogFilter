@@ -1,4 +1,10 @@
 import * as vscode from 'vscode';
+import {
+  captureIconClearBuffer,
+  captureIconNewFile,
+  captureIconRecord,
+  captureIconStop,
+} from './captureBarIcons';
 
 export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri): string {
   const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'styles.css'));
@@ -25,17 +31,27 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
 </head>
 <body>
   <div id="capture-bar" class="hidden" aria-label="Live log capture">
-    <label class="capture-label" for="capture-device">Device</label>
-    <select id="capture-device" aria-label="ADB device"></select>
-    <button id="capture-refresh" class="capture-icon-btn" type="button" title="Refresh adb devices" aria-label="Refresh adb devices">
-      <span class="capture-glyph capture-glyph-refresh" aria-hidden="true"></span>
-    </button>
-    <button id="capture-new-file" class="capture-icon-btn" type="button" title="New capture file (delete current log)" aria-label="New capture file">
-      <span class="capture-glyph capture-glyph-new" aria-hidden="true"></span>
-    </button>
-    <button id="capture-toggle" class="capture-icon-btn" type="button" title="Start adb logcat recording" aria-label="Start adb logcat recording">
-      <span class="capture-glyph capture-glyph-record" aria-hidden="true"></span>
-    </button>
+    <div class="capture-group capture-group-device">
+      <span class="capture-group-label">Device</span>
+      <select id="capture-device" aria-label="ADB device"></select>
+      <button id="capture-refresh" class="capture-icon-btn capture-refresh-btn" type="button" title="Refresh adb devices" aria-label="Refresh adb devices">
+        <span class="capture-glyph capture-glyph-refresh" aria-hidden="true"></span>
+      </button>
+    </div>
+    <div class="capture-sep" aria-hidden="true"></div>
+    <div class="capture-group capture-group-actions" role="group" aria-label="Capture actions">
+      <button id="capture-new-file" class="capture-icon-btn" type="button" title="New capture file — discard current log" aria-label="New capture file">
+        ${captureIconNewFile}
+      </button>
+      <button id="capture-clear-buffer" class="capture-icon-btn capture-option-btn" type="button" title="Clear device log buffer before start (adb logcat -c)" aria-label="Clear logcat buffer before start" aria-pressed="false">
+        ${captureIconClearBuffer}
+      </button>
+      <button id="capture-toggle" class="capture-icon-btn capture-record-btn" type="button" title="Start adb logcat recording" aria-label="Start adb logcat recording">
+        <span class="capture-record-icon capture-record-icon-play">${captureIconRecord}</span>
+        <span class="capture-record-icon capture-record-icon-stop">${captureIconStop}</span>
+      </button>
+    </div>
+    <span class="capture-spacer" aria-hidden="true"></span>
     <span id="capture-status" class="capture-status-text">Idle</span>
   </div>
   <p id="capture-query-hint" class="hidden capture-query-hint">Recording: filter query applies after you stop capture.</p>

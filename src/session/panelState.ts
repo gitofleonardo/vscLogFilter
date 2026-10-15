@@ -8,6 +8,8 @@ export interface LogFilterPanelState {
   query: string;
   sessionKind?: 'file' | 'liveCapture';
   captureDeviceSerial?: string;
+  /** When true, run `adb logcat -c` before each capture start. */
+  captureClearBuffer?: boolean;
   /** Extra search-scope URIs (primary is always sourceUri). */
   selectedUris?: string[];
   /** User-defined order of all open files in the Files menu. */

@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import type { LogEntry, ParseResult } from '../types';
 import { getLogFilterSettings } from '../config';
+import { clearLogcatBuffer } from '../adb/clearLogcatBuffer';
 import { resolveAdbExecutable } from '../adb/resolveAdb';
 import { listAdbDevices, type AdbDevice } from '../adb/listDevices';
 import { LogcatCapture } from '../capture/LogcatCapture';
@@ -44,6 +45,7 @@ export interface LiveCaptureSessionOptions {
   sessionKind?: 'file' | 'liveCapture';
   tempLogDir?: string;
   captureDeviceSerial?: string;
+  captureClearBuffer?: boolean;
   onCaptureUriRekeyed?: (oldKey: string, newKey: string) => void;
 }
 
@@ -99,6 +101,7 @@ export class LogFilterSession {
   readonly sessionKind: 'file' | 'liveCapture';
   captureRecording = false;
   captureDeviceSerial = '';
+  captureClearBuffer = false;
   private tempLogDir?: string;
   private logcatCapture = new LogcatCapture();
   private resolvedAdbPath?: string;
@@ -130,6 +133,7 @@ export class LogFilterSession {
       sessionOptions?.tempLogDir ??
       (this.sessionKind === 'liveCapture' ? path.dirname(uri.fsPath) : undefined);
     this.captureDeviceSerial = sessionOptions?.captureDeviceSerial ?? '';
+    this.captureClearBuffer = sessionOptions?.captureClearBuffer ?? false;
     const restored = initialSubPanels(
       initialQuery,
       persistedSubPanels,
@@ -485,6 +489,11 @@ export class LogFilterSession {
         break;
       case 'captureSelectDevice':
         this.captureDeviceSerial = String(msg.serial ?? '');
+        this.persist();
+        void this.pushCaptureState();
+        break;
+      case 'captureClearBufferChange':
+        this.captureClearBuffer = msg.enabled === true;
         this.persist();
         void this.pushCaptureState();
         break;
@@ -1093,6 +1102,7 @@ export class LogFilterSession {
       recording: this.captureRecording && this.logcatCapture.isRecording(),
       devices: (list ?? []).map((d) => ({ serial: d.serial, label: d.label })),
       selectedSerial: this.captureDeviceSerial,
+      clearBuffer: this.captureClearBuffer,
       status: this.logcatCapture.captureStatus,
       error: this.logcatCapture.errorMessage,
     });
@@ -1125,6 +1135,17 @@ export class LogFilterSession {
       }
     }
     try {
+      if (this.captureClearBuffer) {
+        const cleared = await clearLogcatBuffer(
+          this.resolvedAdbPath,
+          this.captureDeviceSerial,
+        );
+        if (!cleared) {
+          void vscode.window.showInformationMessage(
+            'Could not clear logcat buffer on device; recording will still start and may include older buffered logs.',
+          );
+        }
+      }
       await this.rotateCaptureLogFile();
       await this.logcatCapture.start(
         this.resolvedAdbPath,
@@ -1491,6 +1512,8 @@ export class LogFilterSessionManager {
         state.activeSubPanelId ?? storedForUri?.activeSubPanelId;
       const captureDeviceSerial =
         state.captureDeviceSerial ?? storedForUri?.captureDeviceSerial ?? '';
+      const captureClearBuffer =
+        state.captureClearBuffer ?? storedForUri?.captureClearBuffer ?? false;
       const session = this.createSession(
         uri,
         panel,
@@ -1504,6 +1527,7 @@ export class LogFilterSessionManager {
           sessionKind,
           tempLogDir,
           captureDeviceSerial,
+          captureClearBuffer,
         },
       );
       this.sessions.set(key, session);
@@ -1706,6 +1730,7 @@ export class LogFilterSessionManager {
       activeSubPanelId: session.activeSubPanelId,
       sessionKind: session.sessionKind,
       captureDeviceSerial: session.captureDeviceSerial,
+      captureClearBuffer: session.captureClearBuffer,
     };
     void this.context.workspaceState.update(LogFilterSessionManager.PANELS_KEY, all);
   }

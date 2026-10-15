@@ -28,9 +28,10 @@
 ### 实时 adb 录制
 
 1. 运行 **Log Filter: Open Live Log Capture**（或点击状态栏 **Log Capture**）
-2. 在捕获栏选择 adb 设备，点击 **Start**（需本机已安装 adb 并在 PATH 中，或通过 `logFilter.adbPath` 指定）
-3. 录制过程中过滤框中的 query **不会生效**，面板显示全量 log；可先写好 query
-4. 点击 **Stop** 后自动按当前 query 过滤；关闭捕获面板会停止 adb 并删除临时文件
+2. 在捕获栏选择 adb 设备；可选点 **⌫**（Clear buffer，高亮表示开启，开始录制前执行 `adb logcat -c`；失败仍会开始录制）
+3. 点击录制按钮开始（需本机已安装 adb 并在 PATH 中，或通过 `logFilter.adbPath` 指定）
+4. 录制过程中过滤框中的 query **不会生效**，面板显示全量 log；可先写好 query
+5. 再次点击录制按钮 **Stop** 后自动按当前 query 过滤；关闭捕获面板会停止 adb 并删除临时文件
 
 ## 示例
 

@@ -47,6 +47,7 @@
   const captureRefreshEl = document.getElementById('capture-refresh');
   const captureNewFileEl = document.getElementById('capture-new-file');
   const captureToggleEl = document.getElementById('capture-toggle');
+  const captureClearBufferEl = document.getElementById('capture-clear-buffer');
   const captureStatusEl = document.getElementById('capture-status');
   const captureQueryHintEl = document.getElementById('capture-query-hint');
 
@@ -300,6 +301,10 @@
       : 'Start adb logcat recording';
     captureDeviceEl.disabled = captureRecording;
     captureNewFileEl.disabled = captureRecording;
+    const clearOn = msg.clearBuffer === true;
+    captureClearBufferEl.classList.toggle('is-active', clearOn);
+    captureClearBufferEl.setAttribute('aria-pressed', clearOn ? 'true' : 'false');
+    captureClearBufferEl.disabled = captureRecording;
 
     const devices = Array.isArray(msg.devices) ? msg.devices : [];
     const selected = String(msg.selectedSerial || '');
@@ -357,6 +362,16 @@
 
   captureNewFileEl.addEventListener('click', () => {
     vscode.postMessage({ type: 'captureNewFile' });
+  });
+
+  captureClearBufferEl.addEventListener('click', () => {
+    if (captureClearBufferEl.disabled) {
+      return;
+    }
+    const next = captureClearBufferEl.getAttribute('aria-pressed') !== 'true';
+    captureClearBufferEl.setAttribute('aria-pressed', next ? 'true' : 'false');
+    captureClearBufferEl.classList.toggle('is-active', next);
+    vscode.postMessage({ type: 'captureClearBufferChange', enabled: next });
   });
 
   captureDeviceEl.addEventListener('change', () => {
