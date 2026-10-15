@@ -12,6 +12,7 @@ import { MAX_FIND_MATCHES, TAG_SUGGESTION_LIMIT, FILTER_PROGRESS_CHECK_EVERY } f
 import { shortFileNameFromUriString } from '../uriUtils';
 import { shouldEmitFilterProgress } from './filterProgress';
 import { DEFAULT_SUB_PANEL_ID } from '../constants';
+import { MATCH_ALL_FILTER_QUERY } from '../capture/recordingFilter';
 
 interface ParseAccumulatorState {
   acc: LogParseAccumulator;
@@ -88,6 +89,23 @@ function filterParsed(
   viewId: string,
 ): FilterMeta {
   const matchedIndices: number[] = [];
+  if (query === MATCH_ALL_FILTER_QUERY) {
+    let maxLineNumber = 1;
+    for (let i = 0; i < full.entries.length; i++) {
+      matchedIndices.push(i);
+      maxLineNumber = Math.max(maxLineNumber, full.entries[i].lineNumber + 1);
+    }
+    viewMatchedIndices.set(viewId, matchedIndices);
+    return {
+      entries: [],
+      totalEntries: full.entries.length,
+      matchedCount: matchedIndices.length,
+      maxLineNumber,
+      fileMaxTime: full.fileMaxTime,
+      format: full.format,
+      viewId,
+    };
+  }
   if (!query.trim()) {
     viewMatchedIndices.set(viewId, matchedIndices);
     return {

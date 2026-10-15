@@ -69,6 +69,16 @@
       {
         "command": "logFilter.findPrevious",
         "title": "Log Filter: Find Previous"
+      },
+      {
+        "command": "logFilter.openLiveCapture",
+        "title": "Log Filter: Open Live Log Capture",
+        "icon": "$(record)"
+      },
+      {
+        "command": "logFilter.statusCapture",
+        "title": "Log Filter: Live Log Capture",
+        "icon": "$(record)"
       }
     ],
     "menus": {
@@ -102,6 +112,11 @@
         "command": "logFilter.findPrevious",
         "key": "shift+f3",
         "when": "activeWebviewPanelId == 'logFilter.panel'"
+      },
+      {
+        "command": "logFilter.openLiveCapture",
+        "key": "ctrl+shift+alt+l",
+        "mac": "cmd+shift+alt+l"
       }
     ],
     "configuration": {
@@ -124,6 +139,11 @@
           "default": 300,
           "minimum": 0,
           "description": "Debounce delay (ms) before re-filtering after the query changes."
+        },
+        "logFilter.adbPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the adb executable for live log capture. When empty, adb is searched on PATH (adb.exe on Windows)."
         }
       }
     }

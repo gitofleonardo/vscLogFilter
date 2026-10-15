@@ -38,6 +38,10 @@ npm test
 
 在 VS Code 中按 F5 启动 Extension Development Host 做手工验证。
 
+## Live capture 数据流
+
+`adb logcat -v threadtime` → 临时 `capture.log`（全量 append）→ Worker 索引 → 录制中跳过 query 过滤（全量预览）→ Stop 后 `applyFilter` → 关闭面板删除临时目录。
+
 ## 多标签过滤（Sub Panel）
 
 - Log Filter 面板工具栏 **Files** 右侧为 **Filters** 下拉：每个视图有独立 query 与 Worker 内一份 `matchedIndices` 缓存。

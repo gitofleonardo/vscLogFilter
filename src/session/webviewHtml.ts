@@ -24,6 +24,21 @@ export function getWebviewHtml(webview: vscode.Webview, extensionUri: vscode.Uri
   <title>Log Filter</title>
 </head>
 <body>
+  <div id="capture-bar" class="hidden" aria-label="Live log capture">
+    <label class="capture-label" for="capture-device">Device</label>
+    <select id="capture-device" aria-label="ADB device"></select>
+    <button id="capture-refresh" class="capture-icon-btn" type="button" title="Refresh adb devices" aria-label="Refresh adb devices">
+      <span class="capture-glyph capture-glyph-refresh" aria-hidden="true"></span>
+    </button>
+    <button id="capture-new-file" class="capture-icon-btn" type="button" title="New capture file (delete current log)" aria-label="New capture file">
+      <span class="capture-glyph capture-glyph-new" aria-hidden="true"></span>
+    </button>
+    <button id="capture-toggle" class="capture-icon-btn" type="button" title="Start adb logcat recording" aria-label="Start adb logcat recording">
+      <span class="capture-glyph capture-glyph-record" aria-hidden="true"></span>
+    </button>
+    <span id="capture-status" class="capture-status-text">Idle</span>
+  </div>
+  <p id="capture-query-hint" class="hidden capture-query-hint">Recording: filter query applies after you stop capture.</p>
   <div id="toolbar">
     <div id="files-dropdown">
       <button id="files-btn" type="button" aria-haspopup="listbox" aria-expanded="false" title="Search files">

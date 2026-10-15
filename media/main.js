@@ -42,6 +42,17 @@
   const cherryRowsEl = document.getElementById('cherry-rows');
   const resultsSplitEl = document.getElementById('results-split');
   const contextMenuEl = document.getElementById('context-menu');
+  const captureBarEl = document.getElementById('capture-bar');
+  const captureDeviceEl = document.getElementById('capture-device');
+  const captureRefreshEl = document.getElementById('capture-refresh');
+  const captureNewFileEl = document.getElementById('capture-new-file');
+  const captureToggleEl = document.getElementById('capture-toggle');
+  const captureStatusEl = document.getElementById('capture-status');
+  const captureQueryHintEl = document.getElementById('capture-query-hint');
+
+  let panelSessionKind = 'file';
+  let captureRecording = false;
+  let captureAdbResolved = false;
 
   const ROW_HEIGHT = 19;
   const BUFFER = 40;
@@ -264,7 +275,96 @@
       resolveFindController().advance(1);
     } else if (msg.type === 'findPrevious') {
       resolveFindController().advance(-1);
+    } else if (msg.type === 'panelConfig') {
+      panelSessionKind = msg.sessionKind === 'liveCapture' ? 'liveCapture' : 'file';
+      captureBarEl.classList.toggle('hidden', panelSessionKind !== 'liveCapture');
+      if (panelSessionKind === 'liveCapture') {
+        vscode.postMessage({ type: 'captureRefreshDevices' });
+      }
+    } else if (msg.type === 'captureState') {
+      handleCaptureState(msg);
     }
+  });
+
+  function handleCaptureState(msg) {
+    captureAdbResolved = !!msg.adbResolved;
+    captureRecording = !!msg.recording;
+    captureQueryHintEl.classList.toggle('hidden', !captureRecording);
+    captureToggleEl.classList.toggle('is-recording', captureRecording);
+    captureToggleEl.setAttribute(
+      'aria-label',
+      captureRecording ? 'Stop recording and apply filter query' : 'Start adb logcat recording',
+    );
+    captureToggleEl.title = captureRecording
+      ? 'Stop recording and apply filter query'
+      : 'Start adb logcat recording';
+    captureDeviceEl.disabled = captureRecording;
+    captureNewFileEl.disabled = captureRecording;
+
+    const devices = Array.isArray(msg.devices) ? msg.devices : [];
+    const selected = String(msg.selectedSerial || '');
+    captureDeviceEl.innerHTML = '';
+    if (!captureAdbResolved) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'adb not found — set logFilter.adbPath';
+      captureDeviceEl.appendChild(opt);
+      captureToggleEl.disabled = !captureRecording;
+    } else if (devices.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No devices';
+      captureDeviceEl.appendChild(opt);
+      captureToggleEl.disabled = !captureRecording;
+    } else {
+      devices.forEach((d) => {
+        const opt = document.createElement('option');
+        opt.value = d.serial;
+        opt.textContent = d.label || d.serial;
+        if (d.serial === selected) {
+          opt.selected = true;
+        }
+        captureDeviceEl.appendChild(opt);
+      });
+      if (selected && !devices.some((d) => d.serial === selected)) {
+        const opt = document.createElement('option');
+        opt.value = selected;
+        opt.textContent = `${selected} (offline?)`;
+        opt.selected = true;
+        captureDeviceEl.insertBefore(opt, captureDeviceEl.firstChild);
+      }
+      if (!captureRecording) {
+        captureToggleEl.disabled = !captureAdbResolved;
+      }
+    }
+
+    let statusText = 'Idle';
+    captureStatusEl.classList.remove('recording');
+    if (captureRecording) {
+      statusText = 'Recording…';
+      captureStatusEl.classList.add('recording');
+    } else if (msg.error) {
+      statusText = String(msg.error);
+    } else if (!captureAdbResolved) {
+      statusText = 'adb unavailable';
+    }
+    captureStatusEl.textContent = statusText;
+  }
+
+  captureRefreshEl.addEventListener('click', () => {
+    vscode.postMessage({ type: 'captureRefreshDevices' });
+  });
+
+  captureNewFileEl.addEventListener('click', () => {
+    vscode.postMessage({ type: 'captureNewFile' });
+  });
+
+  captureDeviceEl.addEventListener('change', () => {
+    vscode.postMessage({ type: 'captureSelectDevice', serial: captureDeviceEl.value });
+  });
+
+  captureToggleEl.addEventListener('click', () => {
+    vscode.postMessage({ type: captureRecording ? 'captureStop' : 'captureStart' });
   });
 
   function setCherryExpanded(expanded, persist = true) {
@@ -1456,12 +1556,26 @@
     const matched = msg.stats?.matched ?? 0;
     const total = msg.stats?.total ?? 0;
     const queryEmpty = !(msg.query ?? queryEl.value).trim();
-    statsEl.textContent = queryEmpty ? `— / ${total}` : `${matched} / ${total}`;
+    const isCaptureRecording = !!msg.captureRecording;
+    if (isCaptureRecording) {
+      statsEl.textContent = 'Recording — filter applies after Stop';
+    } else {
+      statsEl.textContent = queryEmpty ? `— / ${total}` : `${matched} / ${total}`;
+    }
 
     const parsing = msg.parseState === 'parsing';
-    const showEmpty = queryEmpty && !parsing && !filtering;
-    emptyStateEl.classList.toggle('hidden', !showEmpty);
-    scrollContentEl.classList.toggle('hidden', showEmpty);
+    const showRecordingPlaceholder = isCaptureRecording && !parsing && !filtering;
+    const showEmpty = !showRecordingPlaceholder && queryEmpty && !parsing && !filtering;
+    if (showRecordingPlaceholder) {
+      emptyStateEl.textContent =
+        'Recording… Live log is open in the editor. Stop capture to parse and filter here.';
+      emptyStateEl.classList.remove('hidden');
+      scrollContentEl.classList.add('hidden');
+    } else {
+      emptyStateEl.textContent = 'Enter a filter query to show matching log lines';
+      emptyStateEl.classList.toggle('hidden', !showEmpty);
+      scrollContentEl.classList.toggle('hidden', showEmpty);
+    }
 
     filenameEl.textContent = `${msg.fileName || ''} (${msg.format || 'unknown'})`;
     if (typeof msg.selectedFileCount === 'number') {

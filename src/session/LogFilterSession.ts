@@ -1,6 +1,15 @@
+import * as path from 'path';
 import * as vscode from 'vscode';
 import type { LogEntry, ParseResult } from '../types';
 import { getLogFilterSettings } from '../config';
+import { resolveAdbExecutable } from '../adb/resolveAdb';
+import { listAdbDevices, type AdbDevice } from '../adb/listDevices';
+import { LogcatCapture } from '../capture/LogcatCapture';
+import { removeTempLogDir } from '../capture/tempLogFile';
+import {
+  MATCH_ALL_FILTER_QUERY,
+  shouldDeferQueryFilter,
+} from '../capture/recordingFilter';
 import { extractHighlightTerms } from '../query';
 import { getWebviewHtml } from './webviewHtml';
 import { WorkerParser, type IndexSource } from './workerParser';
@@ -31,6 +40,13 @@ import {
 
 export { LOG_FILTER_PANEL_VIEW_TYPE };
 
+export interface LiveCaptureSessionOptions {
+  sessionKind?: 'file' | 'liveCapture';
+  tempLogDir?: string;
+  captureDeviceSerial?: string;
+  onCaptureUriRekeyed?: (oldKey: string, newKey: string) => void;
+}
+
 function shortFileName(uriString: string): string {
   try {
     const uri = vscode.Uri.parse(uriString);
@@ -44,7 +60,10 @@ function shortFileName(uriString: string): string {
 }
 
 export class LogFilterSession {
-  readonly uri: vscode.Uri;
+  private _uri: vscode.Uri;
+  get uri(): vscode.Uri {
+    return this._uri;
+  }
   panel: vscode.WebviewPanel;
   sourceViewColumn: vscode.ViewColumn;
   subPanels: SubPanelRuntime[] = [];
@@ -77,6 +96,14 @@ export class LogFilterSession {
   /** Suppress reparse from syncOpenFiles during construction / first paint. */
   private allowSyncReparse = false;
   readonly cherryStore = new CherryPickStore();
+  readonly sessionKind: 'file' | 'liveCapture';
+  captureRecording = false;
+  captureDeviceSerial = '';
+  private tempLogDir?: string;
+  private logcatCapture = new LogcatCapture();
+  private resolvedAdbPath?: string;
+  private captureFileWatcherDisposable?: vscode.Disposable;
+  private onCaptureUriRekeyed?: (oldKey: string, newKey: string) => void;
 
   constructor(
     uri: vscode.Uri,
@@ -92,10 +119,17 @@ export class LogFilterSession {
     persistedActiveSubPanelId?: string,
     private savedQueriesAccess?: SavedQueriesAccess,
     private onSavedQueriesChanged?: (queries: string[]) => void,
+    sessionOptions?: LiveCaptureSessionOptions,
   ) {
-    this.uri = uri;
+    this._uri = uri;
     this.panel = panel;
     this.sourceViewColumn = sourceViewColumn;
+    this.sessionKind = sessionOptions?.sessionKind ?? 'file';
+    this.onCaptureUriRekeyed = sessionOptions?.onCaptureUriRekeyed;
+    this.tempLogDir =
+      sessionOptions?.tempLogDir ??
+      (this.sessionKind === 'liveCapture' ? path.dirname(uri.fsPath) : undefined);
+    this.captureDeviceSerial = sessionOptions?.captureDeviceSerial ?? '';
     const restored = initialSubPanels(
       initialQuery,
       persistedSubPanels,
@@ -112,6 +146,16 @@ export class LogFilterSession {
     panel.webview.html = getWebviewHtml(panel.webview, extensionUri);
     panel.webview.onDidReceiveMessage((msg) => this.onMessage(msg), null, this.disposables);
     panel.onDidDispose(() => this.dispose(), null, this.disposables);
+
+    if (this.sessionKind === 'liveCapture') {
+      this.setupCaptureFileWatcher();
+      this.logcatCapture.setOnProcessEnded((info) => {
+        if (info.intentional) {
+          return;
+        }
+        void this.onCaptureProcessEndedUnexpectedly(info.error);
+      });
+    }
 
     this.syncOpenFiles(listOpenTextTabs());
     this.allowSyncReparse = true;
@@ -198,6 +242,11 @@ export class LogFilterSession {
       return;
     }
     panel.query = query;
+    if (shouldDeferQueryFilter(this.sessionKind, this.captureRecording)) {
+      this.pushSubPanelsState();
+      void this.pushCaptureState();
+      return;
+    }
     this.scheduleFilter(subPanelId);
   }
 
@@ -207,7 +256,9 @@ export class LogFilterSession {
 
   clearQuery(): void {
     this.setSubPanelQuery(this.activeSubPanelId, '');
-    void this.applyFilter(this.activeSubPanelId);
+    if (!shouldDeferQueryFilter(this.sessionKind, this.captureRecording)) {
+      void this.applyFilter(this.activeSubPanelId);
+    }
     this.postUpdate();
     this.persist();
   }
@@ -423,6 +474,28 @@ export class LogFilterSession {
         this.pushSavedQueries();
         this.pushSubPanelsState();
         this.pushCherryView();
+        if (this.sessionKind === 'liveCapture') {
+          void this.pushCaptureInit();
+        } else {
+          void this.panel.webview.postMessage({ type: 'panelConfig', sessionKind: 'file' });
+        }
+        break;
+      case 'captureRefreshDevices':
+        void this.refreshCaptureDevices();
+        break;
+      case 'captureSelectDevice':
+        this.captureDeviceSerial = String(msg.serial ?? '');
+        this.persist();
+        void this.pushCaptureState();
+        break;
+      case 'captureStart':
+        void this.startCapture();
+        break;
+      case 'captureStop':
+        void this.stopCapture();
+        break;
+      case 'captureNewFile':
+        void this.rotateCaptureLogFile();
         break;
       case 'queryChange': {
         const subPanelId = String(msg.subPanelId ?? this.activeSubPanelId);
@@ -584,6 +657,9 @@ export class LogFilterSession {
   }
 
   private scheduleFilter(subPanelId: string): void {
+    if (shouldDeferQueryFilter(this.sessionKind, this.captureRecording)) {
+      return;
+    }
     const existing = this.queryTimers.get(subPanelId);
     if (existing) {
       clearTimeout(existing);
@@ -635,6 +711,9 @@ export class LogFilterSession {
   }
 
   scheduleReparse(): void {
+    if (shouldDeferQueryFilter(this.sessionKind, this.captureRecording)) {
+      return;
+    }
     if (this.parseTimer) {
       clearTimeout(this.parseTimer);
     }
@@ -750,7 +829,11 @@ export class LogFilterSession {
       }
 
       const { confirmBeforeParseBytes } = getLogFilterSettings();
-      if (confirmBeforeParseBytes > 0 && totalBytes >= confirmBeforeParseBytes) {
+      if (
+        this.sessionKind !== 'liveCapture' &&
+        confirmBeforeParseBytes > 0 &&
+        totalBytes >= confirmBeforeParseBytes
+      ) {
         const choice = await vscode.window.showWarningMessage(
           `Log files are large (${formatSize(totalBytes)}). Parsing may take a while.`,
           'Continue',
@@ -772,7 +855,7 @@ export class LogFilterSession {
         logInfo(
           `Reused indexed log (${meta.totalEntries} entries) for ${this.selectedUris.length} file(s)`,
         );
-        await this.applyAllFilters();
+        await this.afterReparseFilters();
         return;
       }
 
@@ -813,7 +896,7 @@ export class LogFilterSession {
       logInfo(
         `Indexed ${meta.totalEntries} entries (${meta.format}) from ${this.selectedUris.length} file(s)`,
       );
-      await this.applyAllFilters();
+      await this.afterReparseFilters();
     } catch (err) {
       if (currentVersion !== this.version) {
         return;
@@ -829,7 +912,258 @@ export class LogFilterSession {
     }
   }
 
+  private async afterReparseFilters(): Promise<void> {
+    if (shouldDeferQueryFilter(this.sessionKind, this.captureRecording)) {
+      await this.applyAllEntriesPreview();
+    } else {
+      await this.applyAllFilters();
+    }
+  }
+
+  private async applyAllEntriesPreview(): Promise<void> {
+    for (const panel of this.subPanels) {
+      const gen = ++panel.filterGeneration;
+      try {
+        const result = await this.workerParser.filterQuery(
+          MATCH_ALL_FILTER_QUERY,
+          panel.id,
+          gen,
+        );
+        if (gen !== panel.filterGeneration) {
+          continue;
+        }
+        panel.matchedCount = result.matchedCount;
+        panel.maxLineNumber = result.maxLineNumber || 1;
+      } catch (err) {
+        logError('preview filter failed', err);
+      }
+    }
+    this.syncActivePanelFromCache();
+    this.parseState = 'ready';
+    this.postUpdate();
+    void this.prefetchActiveRows();
+  }
+
+  private setupCaptureFileWatcher(): void {
+    this.replaceCaptureFileWatcher();
+  }
+
+  private replaceCaptureFileWatcher(): void {
+    this.captureFileWatcherDisposable?.dispose();
+    this.captureFileWatcherDisposable = undefined;
+    if (!this.tempLogDir) {
+      return;
+    }
+    const pattern = new vscode.RelativePattern(
+      vscode.Uri.file(this.tempLogDir),
+      path.basename(this._uri.fsPath),
+    );
+    const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+    watcher.onDidChange(() => {
+      if (!this.captureRecording) {
+        this.scheduleReparse();
+      }
+    });
+    watcher.onDidCreate(() => {
+      if (!this.captureRecording) {
+        this.scheduleReparse();
+      }
+    });
+    this.captureFileWatcherDisposable = watcher;
+  }
+
+  /** Discard current temp capture log and create a new empty file (live capture only). */
+  async rotateCaptureLogFile(): Promise<boolean> {
+    if (this.sessionKind !== 'liveCapture' || this.captureRecording) {
+      return false;
+    }
+    const oldKey = this._uri.toString();
+    await removeTempLogDir(this.tempLogDir);
+    const { createTempLogFile } = await import('../capture/tempLogFile');
+    const temp = await createTempLogFile();
+    this._uri = temp.uri;
+    this.tempLogDir = temp.dir;
+    const newKey = temp.uri.toString();
+    this.selectedUris = [newKey];
+    this.fileOrder = this.fileOrder.filter((u) => u !== oldKey);
+    if (!this.fileOrder.includes(newKey)) {
+      this.fileOrder.push(newKey);
+    }
+    this.workerParser.invalidate();
+    this.entries = [];
+    this.filteredIds = [];
+    this.matchedCount = 0;
+    this.filterMaxLineNumber = 1;
+    this.parseResult = undefined;
+    this.parseState = 'idle';
+    this.warnings = [];
+    this.sourceWarnings = [];
+    this.scanStats = undefined;
+    for (const sub of this.subPanels) {
+      sub.matchedCount = 0;
+      sub.maxLineNumber = 1;
+    }
+    this.replaceCaptureFileWatcher();
+    this.onCaptureUriRekeyed?.(oldKey, newKey);
+    this.persist();
+    this.pushFilesState();
+    this.postUpdate();
+    return true;
+  }
+
+  private async onCaptureProcessEndedUnexpectedly(error?: string): Promise<void> {
+    if (!this.captureRecording) {
+      return;
+    }
+    this.captureRecording = false;
+    this.persist();
+    await this.refreshCaptureDevices();
+    this.postUpdate();
+    void vscode.window.showWarningMessage(
+      error ?? 'Log capture stopped (adb device disconnected or logcat exited).',
+    );
+    this.scheduleReparse();
+  }
+
+  private syncCaptureRecordingWithProcess(): void {
+    if (this.captureRecording && !this.logcatCapture.isRecording()) {
+      this.captureRecording = false;
+    }
+  }
+
+  private async openCaptureLogInEditor(): Promise<void> {
+    try {
+      const doc = await vscode.workspace.openTextDocument(this.uri);
+      await vscode.window.showTextDocument(doc, {
+        viewColumn: vscode.ViewColumn.Beside,
+        preview: false,
+        preserveFocus: true,
+      });
+    } catch (err) {
+      logError('open capture log in editor failed', err);
+      void vscode.window.showWarningMessage(
+        'Could not open the capture log in an editor. It is still recording to a temp file.',
+      );
+    }
+  }
+
+  private async pushCaptureInit(): Promise<void> {
+    void this.panel.webview.postMessage({
+      type: 'panelConfig',
+      sessionKind: 'liveCapture',
+    });
+    await this.refreshCaptureDevices();
+  }
+
+  async refreshCaptureDevices(): Promise<void> {
+    this.resolvedAdbPath = await resolveAdbExecutable();
+    let devices: AdbDevice[] = [];
+    if (this.resolvedAdbPath) {
+      try {
+        devices = await listAdbDevices(this.resolvedAdbPath);
+      } catch (err) {
+        logError('list adb devices failed', err);
+      }
+    }
+    if (
+      this.captureDeviceSerial &&
+      !devices.some((d) => d.serial === this.captureDeviceSerial)
+    ) {
+      // Keep selection if device temporarily offline.
+    } else if (!this.captureDeviceSerial && devices.length === 1) {
+      this.captureDeviceSerial = devices[0].serial;
+    }
+    void this.pushCaptureState(devices);
+  }
+
+  private async pushCaptureState(devices?: AdbDevice[]): Promise<void> {
+    this.syncCaptureRecordingWithProcess();
+    let list = devices;
+    if (!list && this.resolvedAdbPath) {
+      try {
+        list = await listAdbDevices(this.resolvedAdbPath);
+      } catch {
+        list = [];
+      }
+    }
+    void this.panel.webview.postMessage({
+      type: 'captureState',
+      sessionKind: this.sessionKind,
+      adbResolved: Boolean(this.resolvedAdbPath),
+      recording: this.captureRecording && this.logcatCapture.isRecording(),
+      devices: (list ?? []).map((d) => ({ serial: d.serial, label: d.label })),
+      selectedSerial: this.captureDeviceSerial,
+      status: this.logcatCapture.captureStatus,
+      error: this.logcatCapture.errorMessage,
+    });
+  }
+
+  private async startCapture(): Promise<void> {
+    if (this.captureRecording) {
+      return;
+    }
+    this.resolvedAdbPath = await resolveAdbExecutable();
+    if (!this.resolvedAdbPath) {
+      void vscode.window.showWarningMessage(
+        'adb not found. Set logFilter.adbPath in Settings or install platform-tools on PATH.',
+      );
+      await this.refreshCaptureDevices();
+      return;
+    }
+    let devices = await listAdbDevices(this.resolvedAdbPath);
+    if (!this.captureDeviceSerial) {
+      if (devices.length === 1) {
+        this.captureDeviceSerial = devices[0].serial;
+      } else if (devices.length === 0) {
+        void vscode.window.showWarningMessage('No adb device in "device" state.');
+        void this.pushCaptureState(devices);
+        return;
+      } else {
+        void vscode.window.showWarningMessage('Select an adb device before starting capture.');
+        void this.pushCaptureState(devices);
+        return;
+      }
+    }
+    try {
+      await this.rotateCaptureLogFile();
+      await this.logcatCapture.start(
+        this.resolvedAdbPath,
+        this.captureDeviceSerial,
+        this._uri.fsPath,
+      );
+      this.captureRecording = true;
+      this.persist();
+      void this.pushCaptureState(devices);
+      for (const sub of this.subPanels) {
+        sub.matchedCount = 0;
+        sub.maxLineNumber = 1;
+      }
+      this.matchedCount = 0;
+      this.filterMaxLineNumber = 1;
+      this.postUpdate();
+      await this.openCaptureLogInEditor();
+    } catch (err) {
+      logError('start capture failed', err);
+      void vscode.window.showWarningMessage(`Failed to start log capture: ${String(err)}`);
+      void this.pushCaptureState(devices);
+    }
+  }
+
+  private async stopCapture(): Promise<void> {
+    if (!this.captureRecording && !this.logcatCapture.isRecording()) {
+      return;
+    }
+    await this.logcatCapture.stop();
+    this.captureRecording = false;
+    this.persist();
+    void this.pushCaptureState();
+    this.scheduleReparse();
+  }
+
   private async applyFilter(subPanelId: string): Promise<void> {
+    if (shouldDeferQueryFilter(this.sessionKind, this.captureRecording)) {
+      return;
+    }
     if (
       (this.parseState !== 'ready' && this.parseState !== 'filtering') ||
       !this.workerParser.isIndexed
@@ -991,7 +1325,13 @@ export class LogFilterSession {
   }
 
   private postUpdate(): void {
-    const fileName = shortFileName(this.primaryUriString());
+    if (this.sessionKind === 'liveCapture') {
+      this.syncCaptureRecordingWithProcess();
+    }
+    const fileName =
+      this.sessionKind === 'liveCapture'
+        ? 'Live Capture'
+        : shortFileName(this.primaryUriString());
     const tags = this.cachedTags;
     const active = this.activeSubPanel();
     const highlightTerms = extractHighlightTerms(active.query);
@@ -1025,6 +1365,8 @@ export class LogFilterSession {
       tags,
       highlightTerms,
       maxLineNumber: active.maxLineNumber,
+      sessionKind: this.sessionKind,
+      captureRecording: this.sessionKind === 'liveCapture' && this.captureRecording,
     });
     this.pushCherryView();
   }
@@ -1052,6 +1394,12 @@ export class LogFilterSession {
       clearTimeout(timer);
     }
     this.queryTimers.clear();
+    void this.logcatCapture.stop();
+    this.captureRecording = false;
+    this.captureFileWatcherDisposable?.dispose();
+    if (this.sessionKind === 'liveCapture') {
+      void removeTempLogDir(this.tempLogDir);
+    }
     this.workerParser.dispose();
     this.disposeCherry();
     vscode.Disposable.from(...this.disposables).dispose();
@@ -1071,6 +1419,7 @@ function formatSize(bytes: number): string {
 
 export class LogFilterSessionManager {
   private sessions = new Map<string, LogFilterSession>();
+  private liveCaptureKey?: string;
   private static readonly PANELS_KEY = 'logFilter.panels';
   private readonly savedQueries: SavedQueriesStore;
 
@@ -1109,7 +1458,21 @@ export class LogFilterSessionManager {
         return;
       }
 
-      const uri = vscode.Uri.parse(state.sourceUri);
+      let uri = vscode.Uri.parse(state.sourceUri);
+      const sessionKind = state.sessionKind ?? stored[state.sourceUri]?.sessionKind ?? 'file';
+      let tempLogDir: string | undefined =
+        sessionKind === 'liveCapture' ? path.dirname(uri.fsPath) : undefined;
+      if (sessionKind === 'liveCapture') {
+        try {
+          await vscode.workspace.fs.stat(uri);
+        } catch {
+          const { createTempLogFile } = await import('../capture/tempLogFile');
+          const temp = await createTempLogFile();
+          uri = temp.uri;
+          tempLogDir = temp.dir;
+        }
+      }
+
       const key = uri.toString();
       const existing = this.sessions.get(key);
       if (existing && existing.panel !== panel) {
@@ -1119,26 +1482,39 @@ export class LogFilterSessionManager {
       const sourceCol = state.sourceViewColumn ?? vscode.ViewColumn.One;
       const storedForUri = stored[state.sourceUri] ?? stored[key];
       const selectedUris =
-        state.selectedUris ?? storedForUri?.selectedUris ?? [state.sourceUri];
+        state.selectedUris ?? storedForUri?.selectedUris ?? [uri.toString()];
       const fileOrder =
         state.fileOrder ?? storedForUri?.fileOrder ?? [];
       const legacyQuery = state.query ?? storedForUri?.query ?? '';
       const subPanels = state.subPanels ?? storedForUri?.subPanels;
       const activeSubPanelId =
         state.activeSubPanelId ?? storedForUri?.activeSubPanelId;
+      const captureDeviceSerial =
+        state.captureDeviceSerial ?? storedForUri?.captureDeviceSerial ?? '';
       const session = this.createSession(
         uri,
         panel,
         sourceCol,
         legacyQuery,
-        Array.isArray(selectedUris) ? selectedUris : [state.sourceUri],
+        Array.isArray(selectedUris) ? selectedUris : [uri.toString()],
         Array.isArray(fileOrder) ? fileOrder : [],
         subPanels,
         activeSubPanelId,
+        {
+          sessionKind,
+          tempLogDir,
+          captureDeviceSerial,
+        },
       );
       this.sessions.set(key, session);
+      if (sessionKind === 'liveCapture') {
+        this.liveCaptureKey = key;
+      }
       panel.onDidDispose(() => {
         this.sessions.delete(key);
+        if (this.liveCaptureKey === key) {
+          this.liveCaptureKey = undefined;
+        }
         this.removePersisted(key);
       });
     } catch (err) {
@@ -1195,6 +1571,56 @@ export class LogFilterSessionManager {
     return session;
   }
 
+  async openLiveCapture(): Promise<LogFilterSession | undefined> {
+    if (this.liveCaptureKey) {
+      const existing = this.sessions.get(this.liveCaptureKey);
+      if (existing) {
+        existing.reveal();
+        return existing;
+      }
+      this.liveCaptureKey = undefined;
+    }
+
+    const { createTempLogFile } = await import('../capture/tempLogFile');
+    const temp = await createTempLogFile();
+    const key = temp.uri.toString();
+
+    const panelOptions: vscode.WebviewPanelOptions & vscode.WebviewOptions = {
+      enableScripts: true,
+      retainContextWhenHidden: true,
+      localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, 'media')],
+    };
+
+    const panel = vscode.window.createWebviewPanel(
+      LOG_FILTER_PANEL_VIEW_TYPE,
+      'Log Filter: Live Capture',
+      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: false },
+      panelOptions,
+    );
+
+    const session = this.createSession(
+      temp.uri,
+      panel,
+      vscode.ViewColumn.One,
+      '',
+      [key],
+      [],
+      undefined,
+      undefined,
+      { sessionKind: 'liveCapture', tempLogDir: temp.dir },
+    );
+    this.sessions.set(key, session);
+    this.liveCaptureKey = key;
+    panel.onDidDispose(() => {
+      this.sessions.delete(key);
+      if (this.liveCaptureKey === key) {
+        this.liveCaptureKey = undefined;
+      }
+      this.removePersisted(key);
+    });
+    return session;
+  }
+
   private createSession(
     uri: vscode.Uri,
     panel: vscode.WebviewPanel,
@@ -1204,6 +1630,7 @@ export class LogFilterSessionManager {
     initialFileOrder: string[] = [],
     persistedSubPanels?: import('./subPanels').SubPanelState[],
     persistedActiveSubPanelId?: string,
+    liveCapture?: LiveCaptureSessionOptions,
   ): LogFilterSession {
     const savedQueriesAccess: SavedQueriesAccess = {
       list: () => this.savedQueries.list(),
@@ -1211,6 +1638,15 @@ export class LogFilterSessionManager {
       remove: (query) => this.savedQueries.remove(query),
     };
     let session!: LogFilterSession;
+    const captureOpts: LiveCaptureSessionOptions | undefined =
+      liveCapture?.sessionKind === 'liveCapture'
+        ? {
+            ...liveCapture,
+            onCaptureUriRekeyed: (oldKey, newKey) => {
+              this.rekeyLiveCaptureSession(oldKey, newKey, session);
+            },
+          }
+        : liveCapture;
     session = new LogFilterSession(
       uri,
       panel,
@@ -1225,6 +1661,7 @@ export class LogFilterSessionManager {
       persistedActiveSubPanelId,
       savedQueriesAccess,
       (queries) => this.broadcastSavedQueries(queries),
+      captureOpts,
     );
     this.persistSession(session);
     return session;
@@ -1234,6 +1671,23 @@ export class LogFilterSessionManager {
     for (const session of this.sessions.values()) {
       session.pushSavedQueries(queries);
     }
+  }
+
+  private rekeyLiveCaptureSession(
+    oldKey: string,
+    newKey: string,
+    session: LogFilterSession,
+  ): void {
+    if (oldKey === newKey) {
+      return;
+    }
+    this.sessions.delete(oldKey);
+    this.sessions.set(newKey, session);
+    this.removePersisted(oldKey);
+    if (this.liveCaptureKey === oldKey) {
+      this.liveCaptureKey = newKey;
+    }
+    this.persistSession(session);
   }
 
   private persistSession(session: LogFilterSession): void {
@@ -1250,6 +1704,8 @@ export class LogFilterSessionManager {
       fileOrder: session.fileOrder,
       subPanels: toPersistedSubPanels(session.subPanels),
       activeSubPanelId: session.activeSubPanelId,
+      sessionKind: session.sessionKind,
+      captureDeviceSerial: session.captureDeviceSerial,
     };
     void this.context.workspaceState.update(LogFilterSessionManager.PANELS_KEY, all);
   }
@@ -1275,6 +1731,13 @@ export class LogFilterSessionManager {
       return undefined;
     }
     const fileName = title.slice(prefix.length);
+    if (fileName === 'Live Capture') {
+      for (const state of Object.values(stored)) {
+        if (state.sessionKind === 'liveCapture') {
+          return state;
+        }
+      }
+    }
     for (const state of Object.values(stored)) {
       const name = vscode.Uri.parse(state.sourceUri).path.split('/').pop();
       if (name === fileName) {
@@ -1302,7 +1765,7 @@ export class LogFilterSessionManager {
     }
 
     const primary = this.sessions.get(key);
-    if (primary) {
+    if (primary && primary.sessionKind !== 'liveCapture') {
       primary.panel.dispose();
     }
     for (const session of this.sessions.values()) {
@@ -1314,7 +1777,7 @@ export class LogFilterSessionManager {
   onSourceGone(uri: vscode.Uri): void {
     const key = uri.toString();
     const primary = this.sessions.get(key);
-    if (primary) {
+    if (primary && primary.sessionKind !== 'liveCapture') {
       // Primary gone: close panel (same as closing its last tab).
       primary.panel.dispose();
     }

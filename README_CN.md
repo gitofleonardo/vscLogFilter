@@ -15,6 +15,7 @@
 - **Cherry 精选**：将过滤结果 Pick 到主面板右侧内嵌区域（Ctrl/Cmd+Click 或 Shift+Click 多选后右键 Pick）；点击右侧 **Cherry** 按钮展开/收起
 - **自动显示** 过滤标签：在已打开文件间切换时自动切到 Filter 标签
 - **大文件**：VS Code 能读到编辑器 buffer 时用内存内容（保留未保存修改）；否则从磁盘流式读取；可选大小确认（见设置）
+- **实时 adb 录制**：无需打开日志文件即可通过 **Log Filter: Open Live Log Capture**（状态栏 `Log Capture` 或 `Ctrl+Shift+Alt+L`）启动；全量 `adb logcat` 写入临时文件，录制中可预览完整 log，**停止录制后**自动应用当前 query
 
 ## 用法
 
@@ -23,6 +24,13 @@
 3. 点击 **Saved** 保存当前查询或搜索已保存项；双击一项即可填入过滤框
 4. 双击某一行跳转到源编辑器对应行
 5. **Cherry 精选**：在结果行上右键（或 Ctrl/Cmd+Click、Shift+Click 多选后右键）选择 **Pick to Cherry View**；点击主面板右侧 **Cherry** 按钮展开或收起精选列表
+
+### 实时 adb 录制
+
+1. 运行 **Log Filter: Open Live Log Capture**（或点击状态栏 **Log Capture**）
+2. 在捕获栏选择 adb 设备，点击 **Start**（需本机已安装 adb 并在 PATH 中，或通过 `logFilter.adbPath` 指定）
+3. 录制过程中过滤框中的 query **不会生效**，面板显示全量 log；可先写好 query
+4. 点击 **Stop** 后自动按当前 query 过滤；关闭捕获面板会停止 adb 并删除临时文件
 
 ## 示例
 
@@ -65,6 +73,7 @@ tag:AlarmManager pid:2917 tencent | device after:10:50:00
 | `logFilter.confirmBeforeParseSizeMB` | `0` | 可选：超过此大小（MB）解析前确认，`0` 关闭 |
 | `logFilter.parseDebounceMs` | `200` | 日志编辑后重新解析的防抖（ms） |
 | `logFilter.queryDebounceMs` | `300` | 查询编辑后重新过滤的防抖（ms） |
+| `logFilter.adbPath` | `""` | adb 可执行文件路径；为空时在 PATH 中查找（Windows 为 `adb.exe`） |
 
 解析统一走 Worker 线程；当编辑器 buffer 不可用时（超大日志常见）从磁盘流式读取。文件或查询变更时会丢弃过期的 Worker 结果。
 

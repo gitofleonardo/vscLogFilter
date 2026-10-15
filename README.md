@@ -15,6 +15,7 @@ Android Studio Logcat-style log filtering for VS Code. Run **Log Filter: Open** 
 - **Cherry View**: pick filtered log lines into an embedded side pane (Ctrl/Cmd+Click or Shift+Click to multi-select, then right-click to pick); toggle with the **Cherry** button on the right
 - **Auto-reveal** filter tab when switching between open files
 - **Large files**: reads the editor buffer when VS Code exposes it; otherwise streams from disk via Worker; optional size confirmation (see Settings)
+- **Live adb capture**: **Log Filter: Open Live Log Capture** (status bar **Log Capture** or `Ctrl+Shift+Alt+L`) without opening a log file; full `adb logcat` to a temp file, full-log preview while recording, **apply query after Stop**
 
 ## Usage
 
@@ -23,6 +24,13 @@ Android Studio Logcat-style log filtering for VS Code. Run **Log Filter: Open** 
 3. Click **Saved** to store the current query or search previous ones; double-click an item to apply it
 4. Double-click a row to jump to the corresponding line in the source editor
 5. **Cherry View**: right-click a result row (or multi-select with Ctrl/Cmd+Click / Shift+Click) and choose **Pick to Cherry View**; use the **Cherry** toggle on the right edge to expand or collapse the picked list
+
+### Live adb capture
+
+1. Run **Log Filter: Open Live Log Capture** (or click status bar **Log Capture**)
+2. Pick an adb device in the capture bar and click **Start** (adb on PATH or set `logFilter.adbPath`)
+3. While recording, the query box does **not** filter results; the panel shows the full log. You can edit the query for use after stop
+4. Click **Stop** to apply the current query. Closing the capture panel stops adb and deletes the temp file
 
 ## Example
 
@@ -65,6 +73,7 @@ Space-separated terms are combined with AND (same key → implicit OR). Explicit
 | `logFilter.confirmBeforeParseSizeMB` | `0` | Optional confirm before parsing large files (MB). `0` = off. |
 | `logFilter.parseDebounceMs` | `200` | Debounce after log edits before re-parse. |
 | `logFilter.queryDebounceMs` | `300` | Debounce after query edits before re-filter. |
+| `logFilter.adbPath` | `""` | Path to adb; when empty, search PATH (`adb.exe` on Windows). |
 
 Parsing uses a Worker thread and streams file content when the editor buffer is unavailable (common for very large logs). Stale Worker results are discarded when the file or query changes.
 

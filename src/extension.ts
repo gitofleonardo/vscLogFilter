@@ -48,6 +48,14 @@ export function activate(context: vscode.ExtensionContext): void {
       lastActiveLogUri = target.uri.toString();
     }),
 
+    vscode.commands.registerCommand('logFilter.openLiveCapture', async () => {
+      await manager.openLiveCapture();
+    }),
+
+    vscode.commands.registerCommand('logFilter.statusCapture', async () => {
+      await manager.openLiveCapture();
+    }),
+
     vscode.commands.registerCommand('logFilter.close', (resource?: vscode.Uri) => {
       const target = resolveEditorTarget(resource);
       if (target) {
@@ -121,6 +129,13 @@ export function activate(context: vscode.ExtensionContext): void {
       manager.syncOpenFiles();
     }),
   );
+
+  const captureStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 90);
+  captureStatus.command = 'logFilter.statusCapture';
+  captureStatus.text = '$(record) Log Capture';
+  captureStatus.tooltip = 'Log Filter: Open Live Log Capture (adb logcat)';
+  captureStatus.show();
+  context.subscriptions.push(captureStatus);
 
   logInfo('Log Filter extension activated.');
 }

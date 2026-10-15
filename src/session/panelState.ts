@@ -6,6 +6,8 @@ export interface LogFilterPanelState {
   sourceUri: string;
   sourceViewColumn: number;
   query: string;
+  sessionKind?: 'file' | 'liveCapture';
+  captureDeviceSerial?: string;
   /** Extra search-scope URIs (primary is always sourceUri). */
   selectedUris?: string[];
   /** User-defined order of all open files in the Files menu. */
