@@ -107,6 +107,7 @@ export class LogFilterSession {
   private resolvedAdbPath?: string;
   private captureFileWatcherDisposable?: vscode.Disposable;
   private onCaptureUriRekeyed?: (oldKey: string, newKey: string) => void;
+  private panelDisposed = false;
 
   constructor(
     uri: vscode.Uri,
@@ -149,7 +150,10 @@ export class LogFilterSession {
 
     panel.webview.html = getWebviewHtml(panel.webview, extensionUri);
     panel.webview.onDidReceiveMessage((msg) => this.onMessage(msg), null, this.disposables);
-    panel.onDidDispose(() => this.dispose(), null, this.disposables);
+    panel.onDidDispose(() => {
+      this.panelDisposed = true;
+      this.dispose();
+    }, null, this.disposables);
 
     if (this.sessionKind === 'liveCapture') {
       this.setupCaptureFileWatcher();
@@ -224,20 +228,45 @@ export class LogFilterSession {
     this.persist();
   }
 
+  isPanelActive(): boolean {
+    return !this.panelDisposed;
+  }
+
   reveal(): void {
-    this.panel.reveal(this.panel.viewColumn, true);
+    if (this.panelDisposed) {
+      return;
+    }
+    try {
+      this.panel.reveal(this.panel.viewColumn, true);
+    } catch (err) {
+      logError('panel reveal failed', err);
+    }
+  }
+
+  private postToWebview(message: unknown): void {
+    if (this.panelDisposed) {
+      return;
+    }
+    try {
+      void this.panel.webview.postMessage(message);
+    } catch (err) {
+      const text = String(err);
+      if (!text.toLowerCase().includes('disposed')) {
+        logError('webview postMessage failed', err);
+      }
+    }
   }
 
   showFind(): void {
-    void this.panel.webview.postMessage({ type: 'showFind' });
+    this.postToWebview({ type: 'showFind' });
   }
 
   findNext(): void {
-    void this.panel.webview.postMessage({ type: 'findNext' });
+    this.postToWebview({ type: 'findNext' });
   }
 
   findPrevious(): void {
-    void this.panel.webview.postMessage({ type: 'findPrevious' });
+    this.postToWebview({ type: 'findPrevious' });
   }
 
   setSubPanelQuery(subPanelId: string, query: string): void {
@@ -320,7 +349,7 @@ export class LogFilterSession {
   }
 
   private pushSubPanelsState(): void {
-    void this.panel.webview.postMessage({
+    this.postToWebview({
       type: 'subPanelsState',
       subPanels: this.subPanels.map((p, i) => ({
         id: p.id,
@@ -454,7 +483,7 @@ export class LogFilterSession {
   }
 
   private pushFilesState(): void {
-    void this.panel.webview.postMessage({
+    this.postToWebview({
       type: 'filesState',
       primaryUri: this.primaryUriString(),
       selectedUris: this.selectedUris,
@@ -465,7 +494,7 @@ export class LogFilterSession {
 
   pushSavedQueries(queries?: string[]): void {
     const list = queries ?? this.savedQueriesAccess?.list() ?? [];
-    void this.panel.webview.postMessage({
+    this.postToWebview({
       type: 'savedQueriesState',
       queries: list,
     });
@@ -481,7 +510,7 @@ export class LogFilterSession {
         if (this.sessionKind === 'liveCapture') {
           void this.pushCaptureInit();
         } else {
-          void this.panel.webview.postMessage({ type: 'panelConfig', sessionKind: 'file' });
+          this.postToWebview({ type: 'panelConfig', sessionKind: 'file' });
         }
         break;
       case 'captureRefreshDevices':
@@ -600,7 +629,7 @@ export class LogFilterSession {
 
   private pushCherryView(opts?: { expand?: boolean }): void {
     const subPanelId = this.activeSubPanelId;
-    void this.panel.webview.postMessage({
+    this.postToWebview({
       type: 'cherryUpdate',
       pickedKeys: this.cherryStore.pickedKeys(subPanelId),
       count: this.cherryStore.count(subPanelId),
@@ -708,7 +737,7 @@ export class LogFilterSession {
         active.id,
       );
       if (initialRows.length > 0) {
-        void this.panel.webview.postMessage({
+        this.postToWebview({
           type: 'rows',
           requestId: -1,
           subPanelId: active.id,
@@ -1060,7 +1089,7 @@ export class LogFilterSession {
   }
 
   private async pushCaptureInit(): Promise<void> {
-    void this.panel.webview.postMessage({
+    this.postToWebview({
       type: 'panelConfig',
       sessionKind: 'liveCapture',
     });
@@ -1098,7 +1127,7 @@ export class LogFilterSession {
         list = [];
       }
     }
-    void this.panel.webview.postMessage({
+    this.postToWebview({
       type: 'captureState',
       sessionKind: this.sessionKind,
       adbResolved: Boolean(this.resolvedAdbPath),
@@ -1236,7 +1265,7 @@ export class LogFilterSession {
           if (subPanelId !== this.activeSubPanelId) {
             return;
           }
-          void this.panel.webview.postMessage({
+          this.postToWebview({
             type: 'filterProgress',
             percent: inFlightFilterPercent(processed, total),
             subPanelId,
@@ -1295,7 +1324,7 @@ export class LogFilterSession {
     }
     try {
       const rows = await this.workerParser.getRows(start, end, subPanelId);
-      void this.panel.webview.postMessage({
+      this.postToWebview({
         type: 'rows',
         requestId,
         subPanelId,
@@ -1314,7 +1343,7 @@ export class LogFilterSession {
     subPanelId: string,
   ): Promise<void> {
     if (!this.workerParser.isIndexed) {
-      void this.panel.webview.postMessage({
+      this.postToWebview({
         type: 'findMatches',
         requestId,
         subPanelId,
@@ -1325,7 +1354,7 @@ export class LogFilterSession {
     }
     try {
       const result = await this.workerParser.findInResults(needle, subPanelId);
-      void this.panel.webview.postMessage({
+      this.postToWebview({
         type: 'findMatches',
         requestId,
         subPanelId,
@@ -1334,7 +1363,7 @@ export class LogFilterSession {
       });
     } catch (err) {
       logError('findInResults failed', err);
-      void this.panel.webview.postMessage({
+      this.postToWebview({
         type: 'findMatches',
         requestId,
         subPanelId,
@@ -1365,7 +1394,7 @@ export class LogFilterSession {
     const total = scanning && scan ? scan.entryCount : this.totalEntryCount();
     const matched = scanning ? 0 : active.matchedCount;
 
-    this.panel.webview.postMessage({
+    this.postToWebview({
       type: 'update',
       sourceUri: this.uri.toString(),
       sourceViewColumn: this.sourceViewColumn,
@@ -1535,15 +1564,9 @@ export class LogFilterSessionManager {
       );
       this.sessions.set(key, session);
       if (sessionKind === 'liveCapture') {
-        this.liveCaptureKey = key;
+        this.liveCaptureKey = session.uri.toString();
       }
-      panel.onDidDispose(() => {
-        this.sessions.delete(key);
-        if (this.liveCaptureKey === key) {
-          this.liveCaptureKey = undefined;
-        }
-        this.removePersisted(key);
-      });
+      this.bindPanelDispose(session, panel);
     } catch (err) {
       logError('Failed to revive Log Filter panel', err);
       try {
@@ -1590,10 +1613,7 @@ export class LogFilterSessionManager {
 
     const session = this.createSession(uri, panel, sourceViewColumn);
     this.sessions.set(key, session);
-    panel.onDidDispose(() => {
-      this.sessions.delete(key);
-      this.removePersisted(key);
-    });
+    this.bindPanelDispose(session, panel);
 
     return session;
   }
@@ -1601,9 +1621,12 @@ export class LogFilterSessionManager {
   async openLiveCapture(): Promise<LogFilterSession | undefined> {
     if (this.liveCaptureKey) {
       const existing = this.sessions.get(this.liveCaptureKey);
-      if (existing) {
+      if (existing?.isPanelActive()) {
         existing.reveal();
         return existing;
+      }
+      if (existing) {
+        this.unregisterSession(existing);
       }
       this.liveCaptureKey = undefined;
     }
@@ -1638,14 +1661,23 @@ export class LogFilterSessionManager {
     );
     this.sessions.set(key, session);
     this.liveCaptureKey = key;
-    panel.onDidDispose(() => {
-      this.sessions.delete(key);
-      if (this.liveCaptureKey === key) {
-        this.liveCaptureKey = undefined;
-      }
-      this.removePersisted(key);
-    });
+    this.bindPanelDispose(session, panel);
     return session;
+  }
+
+  private unregisterSession(session: LogFilterSession): void {
+    const key = session.uri.toString();
+    this.sessions.delete(key);
+    if (this.liveCaptureKey === key) {
+      this.liveCaptureKey = undefined;
+    }
+    this.removePersisted(key);
+  }
+
+  private bindPanelDispose(session: LogFilterSession, panel: vscode.WebviewPanel): void {
+    panel.onDidDispose(() => {
+      this.unregisterSession(session);
+    });
   }
 
   private createSession(
