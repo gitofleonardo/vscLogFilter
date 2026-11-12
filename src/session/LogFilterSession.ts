@@ -6,6 +6,7 @@ import { clearLogcatBuffer } from '../adb/clearLogcatBuffer';
 import { resolveAdbExecutable } from '../adb/resolveAdb';
 import { listAdbDevices, type AdbDevice } from '../adb/listDevices';
 import { LogcatCapture } from '../capture/LogcatCapture';
+import { isVscLogFilterTempCaptureLogUri } from '../capture/tempCaptureLogPath';
 import { removeTempLogDir } from '../capture/tempLogFile';
 import {
   MATCH_ALL_FILTER_QUERY,
@@ -365,6 +366,11 @@ export class LogFilterSession {
   syncOpenFiles(openFiles: OpenTextTabInfo[]): void {
     try {
       const primary = this.primaryUriString();
+      if (this.sessionKind === 'liveCapture') {
+        openFiles = openFiles.filter(
+          (f) => f.uri === primary || !isVscLogFilterTempCaptureLogUri(f.uri),
+        );
+      }
       const byUri = new Map(openFiles.map((f) => [f.uri, f]));
       if (!byUri.has(primary)) {
         byUri.set(primary, { uri: primary, fileName: shortFileName(primary) });
@@ -387,7 +393,12 @@ export class LogFilterSession {
 
       const openSet = new Set(ordered.map((f) => f.uri));
       const openUris = ordered.map((f) => f.uri);
-      const nextFileOrder = mergeFileOrder(this.fileOrder, openUris, primary);
+      let nextFileOrder = mergeFileOrder(this.fileOrder, openUris, primary);
+      if (this.sessionKind === 'liveCapture') {
+        nextFileOrder = nextFileOrder.filter(
+          (u) => u === primary || !isVscLogFilterTempCaptureLogUri(u),
+        );
+      }
       const fileOrderChanged = !arraysEqual(nextFileOrder, this.fileOrder);
       this.fileOrder = nextFileOrder;
 
@@ -400,7 +411,9 @@ export class LogFilterSession {
       this.selectedUris = next;
       this.pushFilesState();
       if (selectionChanged || fileOrderChanged) {
-        this.persist();
+        if (this.allowSyncReparse) {
+          this.persist();
+        }
         if (selectionChanged && this.allowSyncReparse) {
           this.scheduleReparse();
         }
@@ -1018,15 +1031,19 @@ export class LogFilterSession {
     if (this.sessionKind !== 'liveCapture' || this.captureRecording) {
       return false;
     }
-    const oldKey = this._uri.toString();
+    const oldUri = this._uri;
+    const oldKey = oldUri.toString();
     await removeTempLogDir(this.tempLogDir);
     const { createTempLogFile } = await import('../capture/tempLogFile');
     const temp = await createTempLogFile();
     this._uri = temp.uri;
     this.tempLogDir = temp.dir;
     const newKey = temp.uri.toString();
+    this.preferredSelectedUris = this.preferredSelectedUris.filter((u) => u !== oldKey);
     this.selectedUris = [newKey];
-    this.fileOrder = this.fileOrder.filter((u) => u !== oldKey);
+    const dropStaleTempCapture = (u: string) =>
+      u === newKey || !isVscLogFilterTempCaptureLogUri(u);
+    this.fileOrder = this.fileOrder.filter(dropStaleTempCapture);
     if (!this.fileOrder.includes(newKey)) {
       this.fileOrder.push(newKey);
     }
@@ -1047,7 +1064,7 @@ export class LogFilterSession {
     this.replaceCaptureFileWatcher();
     this.onCaptureUriRekeyed?.(oldKey, newKey);
     this.persist();
-    this.pushFilesState();
+    this.syncOpenFiles(listOpenTextTabs());
     this.postUpdate();
     return true;
   }
@@ -1749,7 +1766,10 @@ export class LogFilterSessionManager {
     this.persistSession(session);
   }
 
-  private persistSession(session: LogFilterSession): void {
+  private persistSession(session: LogFilterSession | undefined): void {
+    if (!session) {
+      return;
+    }
     const all =
       this.context.workspaceState.get<Record<string, LogFilterPanelState>>(
         LogFilterSessionManager.PANELS_KEY,
